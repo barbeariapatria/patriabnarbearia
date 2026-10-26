@@ -153,7 +153,8 @@
     if (!res.ok) {
       // Resposta sem JSON (ex.: a hospedagem derrubou a função): mostra o código e um trecho do erro
       const detail = data?.error || raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-      throw new Error(`Erro ${res.status}${detail ? `: ${detail}` : ''}${res.status >= 500 && !data?.error ? ' · veja /api/health' : ''}`);
+      if (data?.error) throw new Error(data.error);
+      throw new Error(`Erro ${res.status}${detail ? `: ${detail}` : ''}${res.status >= 500 ? ' · veja /api/health' : ''}`);
     }
     return data;
   }
@@ -1468,6 +1469,14 @@
             <input type="file" id="csvFiles" accept=".csv,text/csv" multiple hidden>
           </label>
           <div id="fileList" class="chips" style="margin-top:12px"></div>
+          <div class="import-period">
+            <div class="field" style="margin:0"><label for="impMes">Mês dos relatórios</label>
+              <div style="display:flex;gap:8px">
+                <select class="input" id="impMes">${MONTHS.map((n, i) => `<option value="${i + 1}" ${i + 1 === state.m ? 'selected' : ''}>${n}</option>`).join('')}</select>
+                <select class="input" id="impAno" style="max-width:110px">${[-2, -1, 0, 1].map((d) => new Date().getFullYear() + d).map((y) => `<option ${y === state.y ? 'selected' : ''}>${y}</option>`).join('')}</select>
+              </div></div>
+            <p class="muted" style="margin:0;font-size:12px">Exporte do CashBarber o mês inteiro (dia 1 ao último dia). Comandas e agendamentos trazem as datas e confirmam o mês; Serviços, Assinantes e Cancelamentos usam o mês escolhido aqui.</p>
+          </div>
           <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
             <button class="btn btn-primary" id="analyze" disabled>${icon('eye')} Analisar arquivos</button>
           </div>
@@ -1489,6 +1498,8 @@
 
     let files = [];
     const input = $('#csvFiles'); const drop = $('#drop');
+    const chosen = () => ({ ano: Number($('#impAno').value), mes: Number($('#impMes').value) });
+    ['#impMes', '#impAno'].forEach((sel) => $(sel).addEventListener('change', () => { $('#preview').innerHTML = ''; }));
     const readAll = async (list) => {
       files = await Promise.all([...list].filter((f) => /\.csv$/i.test(f.name) || f.type.includes('csv')).map((f) => f.text().then((text) => ({ name: f.name, text }))));
       $('#fileList').innerHTML = files.map((f) => `<span class="chip on">${esc(f.name)}</span>`).join('') || '<span class="muted">Nenhum CSV selecionado</span>';
@@ -1503,7 +1514,7 @@
     $('#analyze').onclick = async () => {
       const btn = $('#analyze'); btn.disabled = true;
       try {
-        const { plan } = await api('/api/admin/importar', { method: 'POST', body: { files } });
+        const { plan } = await api('/api/admin/importar', { method: 'POST', body: { files, ...chosen() } });
         renderPreview(plan);
       } catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; }
     };
@@ -1511,12 +1522,19 @@
     function renderPreview(plan) {
       const f = plan.financeiro; const r = f?.resumo; const ag = plan.agenda; const as = plan.assinaturas; const eq = plan.equipe;
       const mes = plan.mes_nome || 'cadastro da equipe';
+      if (plan.mes) { $('#impMes').value = plan.mes; if (![...$('#impAno').options].some((o) => Number(o.value) === plan.ano)) $('#impAno').add(new Option(plan.ano, plan.ano)); $('#impAno').value = plan.ano; }
+      const per = plan.periodos || {};
       const box = (l, v) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:17px;font-weight:700">${v}</div></div>`;
       $('#preview').innerHTML = `
         <div class="card fade-in" style="border-color:color-mix(in srgb,var(--accent) 50%,var(--border))">
           <div class="card-h"><h3>Prévia · ${mes}</h3><div class="grow"></div>
             ${plan.relatorios.map((t) => `<span class="badge good">${icon('check')}${REPORT_LABEL[t] || t}</span>`).join(' ')}
             ${plan.ignorados.map((n) => `<span class="badge warn" title="Formato não reconhecido">${esc(n)}</span>`).join(' ')}</div>
+          <div class="chips" style="margin-bottom:14px">
+            ${per.mes ? `<span class="chip on">${icon('calendar')} Mês: ${per.mes.texto}${plan.mes_detectado ? ' (pelas datas dos arquivos)' : ' (escolhido)'}</span>` : ''}
+            ${per.comandas ? `<span class="chip">Comandas: ${per.comandas.texto}</span>` : ''}
+            ${per.agendamentos ? `<span class="chip">Agendamentos: ${per.agendamentos.texto}</span>` : ''}
+          </div>
           ${f ? `<div class="grid g-4" style="gap:12px">
             ${box('Faturamento total', brl(r.faturamento_total))}${box('Comandas', `${int(r.comandas)} · ${brl(r.servicos + r.produtos + r.sva)}`)}
             ${box('Assinaturas cobradas', `${int(r.cobrancas_assinatura)} · ${brl(r.novas_assinaturas + r.recorrencia)}`)}${box('Novas assinaturas', `${int(r.novas_assinaturas_qtd)} · ${brl(r.novas_assinaturas)}`)}
@@ -1544,7 +1562,7 @@
       $('#confirmImport').onclick = async () => {
         const b = $('#confirmImport'); b.disabled = true;
         try {
-          await api('/api/admin/importar', { method: 'POST', body: { files, confirmar: true } });
+          await api('/api/admin/importar', { method: 'POST', body: { files, confirmar: true, ...chosen() } });
           toast(`${plan.mes_nome || 'Equipe'} importado`);
           if (plan.ano) setPeriod({ mode: 'mes', y: plan.ano, m: plan.mes });
           location.hash = plan.ano ? '#/inicio' : '#/admin/equipe';
@@ -1557,7 +1575,8 @@
   // ============================================================ Admin · Dados do mês (edição manual)
   async function viewAdminData(view) {
     const q = `ano=${state.y}&mes=${state.m}`;
-    const [ag, as, sv] = await Promise.all(['agenda', 'assinaturas', 'servicos'].map((k) => api(`/api/admin/relatorios/${k}?${q}`)));
+    const [ag, as, sv, imp] = await Promise.all(['agenda', 'assinaturas', 'servicos', 'importacao'].map((k) => api(`/api/admin/relatorios/${k}?${q}`)));
+    const impInfo = imp.data ? `Importado em ${new Date(imp.data.em).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}: ${imp.data.relatorios.map((r) => REPORT_LABEL[r] || r).join(', ')}${imp.data.periodos?.comandas ? ` · comandas de ${imp.data.periodos.comandas.texto}` : ''}${imp.data.periodos?.agendamentos ? ` · agenda de ${imp.data.periodos.agendamentos.texto}` : ''}` : 'Nenhum relatório do CashBarber importado para este mês.';
     const mes = `${MONTHS[state.m - 1]} ${state.y}`;
     $('#pageSub').textContent = 'Edite à mão o que veio do CashBarber (ou preencha sem importar)';
     const AG = [['total', 'Agendamentos'], ['finalizados', 'Finalizados'], ['cancelados', 'Cancelados'], ['faltas', 'Faltas'], ['app', 'Pelo app'], ['clube', 'Assinantes'], ['futuros', 'Por vir']];
@@ -1568,6 +1587,7 @@
     const inp = (attrs, val, w = 90) => `<input class="cell num" style="width:${w}px" ${attrs} value="${val ?? ''}" inputmode="decimal">`;
 
     view.innerHTML = `
+      <div class="banner" style="border-color:var(--border-strong);background:var(--surface)">${icon('download')}<div class="grow">${esc(impInfo)}</div><a class="btn btn-sm" href="#/admin/importar">Importar</a></div>
       <div class="card fade-in">
         <div class="card-h"><h3>${icon('calendar')} Agenda · ${mes}</h3><div class="grow"></div><span class="hint">${ag.atualizado_em ? `atualizado ${fmtDateTime(ag.atualizado_em)}` : 'sem dados'}</span></div>
         <div class="table-wrap"><table class="t" id="agTable">

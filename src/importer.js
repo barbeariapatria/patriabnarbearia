@@ -66,7 +66,7 @@ const serviceKey = (n) => normalize(n).replace(/\bDEPILACAO( DE)?\b/g, 'DEP').re
 const monthsOf = (dates) => [...new Set(dates.map((d) => d.slice(0, 7)))].sort();
 
 /** Analisa os arquivos e devolve o plano de importação (nada é gravado aqui). */
-async function analyze(files) {
+async function analyze(files, escolhido = {}) {
   const reports = {};
   const ignored = [];
   for (const f of files) {
@@ -86,11 +86,27 @@ async function analyze(files) {
     pro: r.PROFISSIONAL, origem: normalize(r['ORIGEM AGENDAMENTO']), clube: normalize(r['ACESSO AO CLUBE']) === 'SIM',
     status: normalize(r.STATUS), cliente_status: normalize(r['STATUS DO CLIENTE']), date: brDate(r['DATA E HORA']),
   })).filter((a) => a.date);
+  // Período dos arquivos: as datas de comandas/agendamentos definem o mês; sem elas, vale o mês escolhido na tela
+  const fmt = (d) => d.split('-').reverse().join('/');
+  const periodos = {};
+  for (const [k, list] of [['comandas', comandas], ['agendamentos', agendamentos]]) {
+    if (!list.length) continue;
+    const ds = list.map((x) => x.date).sort();
+    periodos[k] = { de: ds[0], ate: ds[ds.length - 1], texto: `${fmt(ds[0])} a ${fmt(ds[ds.length - 1])}` };
+  }
   const months = monthsOf([...comandas, ...agendamentos].map((x) => x.date));
-  if (months.length > 1) throw new Error(`Os relatórios precisam ser de um único mês (encontrados: ${months.join(', ')}).`);
+  if (months.length > 1) {
+    throw new Error(`Os arquivos cobrem mais de um mês (${months.map((k) => `${MONTHS[Number(k.slice(5)) - 1]}/${k.slice(0, 4)}`).join(', ')}). No CashBarber, exporte um mês por vez (do dia 1 ao último dia do mês).`);
+  }
+  const ey = Number(escolhido.ano) || null; const em = Number(escolhido.mes) || null;
+  if (months.length && ey && em && months[0] !== `${ey}-${String(em).padStart(2, '0')}`) {
+    const [dy, dm] = months[0].split('-').map(Number);
+    throw new Error(`Os arquivos são de ${MONTHS[dm - 1]}/${dy}, mas o mês escolhido é ${MONTHS[em - 1]}/${ey}. Escolha ${MONTHS[dm - 1]}/${dy} ou envie os arquivos do mês certo.`);
+  }
   const needsMonth = ['servicos', 'assinantes', 'cancelamentos'].some((k) => reports[k]);
-  if (!months.length && needsMonth) throw new Error('Envie junto o relatório de comandas ou de agendamentos: é por eles que o painel sabe de qual mês são os dados.');
-  const [y, m] = months.length ? months[0].split('-').map(Number) : [null, null];
+  if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Assinantes e Cancelamentos não trazem datas.');
+  const [y, m] = months.length ? months[0].split('-').map(Number) : (needsMonth || reports.equipe ? [ey, em] : [null, null]);
+  if (y && m) periodos.mes = { de: iso(y, m, 1), ate: iso(y, m, daysInMonth(y, m)), texto: `${MONTHS[m - 1]}/${y}` };
 
   // ---- equipe: liga IDs e nomes completos do CashBarber aos profissionais do painel
   const existing = await db.all('SELECT * FROM professionals');
@@ -264,6 +280,7 @@ async function analyze(files) {
 
   return {
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
+    mes_detectado: months.length > 0, periodos,
     relatorios: Object.keys(reports), ignorados: ignored,
     equipe, financeiro, agenda, assinaturas,
     servicos: servicos.length ? { lista: servicos, sva_total: round2(svaTotal), total: round2(servTotal) } : null,
@@ -325,6 +342,7 @@ async function apply(plan) {
       }
       await saveReport(q, y, m, 'agenda', { totais: plan.agenda.totais, profissionais, por_dia: plan.agenda.por_dia });
     }
+    if (y && m) await saveReport(q, y, m, 'importacao', { em: new Date().toISOString(), relatorios: plan.relatorios, periodos: plan.periodos });
     if (plan.assinaturas) await saveReport(q, y, m, 'assinaturas', plan.assinaturas);
     if (plan.servicos) await saveReport(q, y, m, 'servicos', plan.servicos);
   });

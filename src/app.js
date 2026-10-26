@@ -300,7 +300,7 @@ app.post('/api/admin/webhook/testar', auth.requireAdmin, wrap(async (req) => {
   return { simulado: simular !== false, results };
 }));
 // ---------------------------------------------------------------- Admin: dados mensais editáveis (agenda, clube, serviços)
-const REPORT_KINDS = ['agenda', 'assinaturas', 'servicos'];
+const REPORT_KINDS = ['agenda', 'assinaturas', 'servicos', 'importacao'];
 app.get('/api/admin/relatorios/:kind', auth.requireAdmin, wrap(async (req) => {
   if (!REPORT_KINDS.includes(req.params.kind)) throw new Error('Tipo de relatório inválido');
   const { y, m } = ym(req.query);
@@ -309,7 +309,7 @@ app.get('/api/admin/relatorios/:kind', auth.requireAdmin, wrap(async (req) => {
 }));
 app.put('/api/admin/relatorios/:kind', auth.requireAdmin, wrap(async (req) => {
   const kind = req.params.kind;
-  if (!REPORT_KINDS.includes(kind)) throw new Error('Tipo de relatório inválido');
+  if (!['agenda', 'assinaturas', 'servicos'].includes(kind)) throw new Error('Tipo de relatório inválido');
   const { y, m } = ym(req.body || {});
   const data = req.body?.data;
   if (!data || typeof data !== 'object') throw new Error('Dados inválidos');
@@ -349,7 +349,7 @@ app.delete('/api/admin/mes', auth.requireAdmin, wrap(async (req) => {
 app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
   const files = Array.isArray(req.body?.files) ? req.body.files.filter((f) => f && typeof f.text === 'string') : [];
   if (!files.length) throw new Error('Selecione os arquivos CSV exportados do CashBarber.');
-  const plan = await importer.analyze(files);
+  const plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
   if (!req.body.confirmar) return { plan };
   const result = await importer.apply(plan);
   await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios });

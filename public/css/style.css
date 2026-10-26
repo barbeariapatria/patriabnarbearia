@@ -401,3 +401,6 @@ table.t tr.subtotal td { background: var(--surface-2); font-weight: 700; border-
   .period-custom .btn { grid-column: 1 / -1; }
   .month-picker.range .label { min-width: 0; }
 }
+
+.import-period { display: grid; grid-template-columns: minmax(0, 320px) 1fr; gap: 14px; align-items: end; margin-top: 16px; }
+@media (max-width: 640px) { .import-period { grid-template-columns: 1fr; } }
