@@ -165,6 +165,7 @@ async function catalogo(page) {
     await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
     item.titulo = await tituloDaPagina(page);
     const pagina = { url: new URL(page.url()).pathname + new URL(page.url()).search, pedido: item.url, nomes: [...item.nomes], titulo: item.titulo };
+    if (MODO !== 'mapear') log(`  ${pagina.url} · ${[...item.nomes][0] || ''} · ${item.titulo}`);
     if (MODO === 'mapear') {
       Object.assign(pagina, await estrutura(page));
       const datas = pagina.campos.filter((c) => c.type === 'date' || /data|date|inicio|fim|periodo/i.test(`${c.name} ${c.id} ${c.placeholder}`)).length;
@@ -245,6 +246,7 @@ async function definirPeriodo(page, per) {
       if (feito) feito += ` após clicar em "${info.t}"`;
     }
   }
+  if (!feito) feito = await abrirFiltro(page, per); // filtro aberto por um ícone (funil, calendário)
   await page.keyboard.press('Tab').catch(() => {}); // fecha o calendário sem fechar a janela do filtro
   await page.waitForTimeout(500);
   return feito;
@@ -262,45 +264,82 @@ async function aplicarFiltro(page) {
 }
 
 // ---------------------------------------------------------------- exportação
-const RE_EXPORT = /exportar|export|csv|excel|xlsx|\bxls\b|planilha|baixar|download/i;
+// Botões e links da área do relatório (fora dos menus), com texto, dicas e classes dos ícones — muitos botões
+// do CashBarber são só um ícone, sem texto. Cada um recebe data-robo-idx para o robô clicar depois.
+async function clicaveis(page) {
+  return page.evaluate(() => {
+    document.querySelectorAll('[data-robo-idx]').forEach((e) => e.removeAttribute('data-robo-idx'));
+    const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    const menu = 'nav, aside, header, #kt_header, #kt_header_menu, #kt_aside, .aside, .sidebar, .header-menu, .menu-nav, .topbar';
+    const els = [...document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"], .btn, .dt-button, [onclick], [class*="download"], [class*="export"]')]
+      .filter((e) => vis(e) && !e.closest(menu));
+    const unicos = els.filter((e) => !els.some((o) => o !== e && o.contains(e) && o.matches('button, a, [role="button"]')));
+    return unicos.map((e, i) => {
+      e.setAttribute('data-robo-idx', String(i));
+      const icones = [...e.querySelectorAll('i, svg, img, span[class*="icon"], span[class*="svg"]')]
+        .map((x) => `${x.getAttribute('class') || ''} ${x.getAttribute('alt') || ''} ${(x.getAttribute('src') || '').split('/').pop()} ${x.getAttribute('data-icon') || ''}`).join(' ');
+      const texto = (e.innerText || e.value || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      const desc = [texto, e.title, e.getAttribute('aria-label'), e.getAttribute('data-original-title'), e.getAttribute('data-bs-original-title'),
+        e.getAttribute('data-tip'), `classe:${(e.getAttribute('class') || '').slice(0, 60)}`, icones.trim() && `ícone:${icones.trim().slice(0, 80)}`,
+        e.getAttribute('href') && !/^(#|javascript)/.test(e.getAttribute('href')) ? `link:${e.getAttribute('href').slice(0, 60)}` : '',
+        e.disabled ? '(desativado)' : ''].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      return { i, desc, texto };
+    });
+  });
+}
+const RE_EXPORT = /exportar|export|csv|excel|xlsx|\bxls\b|planilha|baixar|download|file-?(csv|excel|export|download|arrow)|sheet/i;
+const RE_PERIGO = /importar|excluir|apagar|deletar|remover|cancelar|enviar|trash|delete|lixeira|editar|\bedit\b|salvar|novo|adicionar|\bplus\b/i;
+const alvo = (page, i) => page.locator(`[data-robo-idx="${i}"]`).first();
 
-async function tentarDownload(page, alvo, ms = 15000) {
+async function tentarDownload(page, el, ms = 12000) {
   const espera = page.waitForEvent('download', { timeout: ms }).catch(() => null);
-  await alvo.click({ timeout: 5000 }).catch(() => {});
-  return espera;
+  // clique normal; se o Playwright não conseguir (ícone sem tamanho, sobreposto), clica pelo próprio elemento
+  const clicou = await el.click({ timeout: 5000 }).then(() => true)
+    .catch(() => el.evaluate((e) => { e.click(); return true; }).catch(() => false));
+  return clicou ? espera : null;
+}
+
+async function salvarDownload(d) {
+  const destino = path.join(SAIDA, `tmp-${Date.now()}-${d.suggestedFilename()}`);
+  await d.saveAs(destino);
+  const buf = fs.readFileSync(destino); fs.rmSync(destino);
+  return { origem: 'download', arquivo: d.suggestedFilename(), csv: await paraCsv(buf, d.suggestedFilename()) };
 }
 
 async function exportar(page, { tabela = true } = {}) {
-  const sel = 'button, a, [role="button"], input[type="button"], input[type="submit"], .dt-button, li a';
-  const candidatos = page.locator(sel).filter({ visible: true });
-  const n = await candidatos.count();
-  const lista = [];
-  for (let i = 0; i < n; i++) {
-    const el = candidatos.nth(i);
-    const t = `${await el.innerText().catch(() => '')} ${await el.getAttribute('title').catch(() => '')} ${await el.getAttribute('aria-label').catch(() => '')} ${await el.getAttribute('value').catch(() => '')}`;
-    if (RE_EXPORT.test(t) && !/importar|excluir|apagar|deletar|remover|cancelar|enviar/i.test(t)) lista.push({ el, csv: /csv/i.test(t) ? 2 : /excel|xls/i.test(t) ? 1 : 0 });
-  }
-  lista.sort((a, b) => b.csv - a.csv);
-  for (const { el } of lista) {
-    let d = await tentarDownload(page, el);
+  const lista = (await clicaveis(page)).filter((c) => RE_EXPORT.test(c.desc) && !RE_PERIGO.test(c.desc))
+    .map((c) => ({ ...c, peso: /csv/i.test(c.desc) ? 2 : /excel|xls|sheet/i.test(c.desc) ? 1 : 0 }))
+    .sort((a, b) => b.peso - a.peso);
+  for (const c of lista) {
+    let d = await tentarDownload(page, alvo(page, c.i));
     if (!d) {
-      // o botão pode ter aberto um menu com as opções
-      for (const re of [/csv/i, /excel|xlsx|xls/i]) {
-        const opc = page.locator(sel).filter({ visible: true, hasText: re }).first();
-        if (await opc.count()) { d = await tentarDownload(page, opc); if (d) break; }
+      // o botão pode ter aberto um menu ou uma janela com as opções (CSV primeiro)
+      await page.waitForTimeout(800);
+      const opcoes = (await clicaveis(page)).filter((o) => !RE_PERIGO.test(o.desc));
+      for (const re of [/csv/i, /excel|xlsx|xls|sheet/i, /baixar|download|exportar/i]) {
+        const o = opcoes.find((x) => re.test(x.desc));
+        if (o) { d = await tentarDownload(page, alvo(page, o.i)); if (d) break; }
       }
     }
-    if (d) {
-      const destino = path.join(SAIDA, `tmp-${Date.now()}-${d.suggestedFilename()}`);
-      await d.saveAs(destino);
-      const buf = fs.readFileSync(destino); fs.rmSync(destino);
-      return { origem: 'download', arquivo: d.suggestedFilename(), csv: await paraCsv(buf, d.suggestedFilename()) };
-    }
+    if (d) return salvarDownload(d);
   }
   // último recurso: ler a maior tabela da tela
   if (!tabela) return null;
   const csv = await tabelaDaTela(page);
   return csv ? { origem: 'tabela da tela', arquivo: 'tabela.csv', csv } : null;
+}
+
+// abre o filtro pelo botão da área do relatório (muitas vezes só um ícone de funil) e preenche as datas na janela
+async function abrirFiltro(page, per) {
+  const lista = (await clicaveis(page)).filter((c) => /filtr|filter|funnel|calend|per[ií]odo/i.test(c.desc) && !RE_PERIGO.test(c.desc));
+  for (const c of lista) {
+    const b = alvo(page, c.i);
+    await b.click({ timeout: 5000 }).catch(() => b.evaluate((e) => e.click()).catch(() => {}));
+    await page.waitForTimeout(1500);
+    const feito = await preencherDatas(page, per);
+    if (feito) { await page.keyboard.press('Tab').catch(() => {}); return `${feito} na janela do filtro`; }
+  }
+  return null;
 }
 
 async function tabelaDaTela(page) {
@@ -407,7 +446,12 @@ async function main() {
       const files = []; const resumo = { mes: `${mes.ano}-${pad(mes.mes)}`, relatorios: {} };
       for (const c of CONFIG) {
         const url = mapa[c.chave];
-        if (!url) { resumo.relatorios[c.chave] = 'página não encontrada'; continue; }
+        if (!url) {
+          resumo.relatorios[c.chave] = 'página não encontrada';
+          log(`  ${c.chave}: ERRO — página não encontrada`);
+          if (c.obrigatorio) relatorioFinal.erros.push(`${resumo.mes} ${c.chave}: página do relatório não encontrada`);
+          continue;
+        }
         try {
           await page.goto(BASE + url, { waitUntil: 'domcontentloaded' });
           await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
@@ -418,10 +462,14 @@ async function main() {
           }
           // primeiro tenta baixar direto (CSV na janela do filtro); se não der, aplica o filtro e tenta de novo
           let ex = c.periodo ? await exportar(page, { tabela: false }) : null;
+          if (!ex && c.periodo) {
+            const como = await abrirFiltro(page, per);
+            if (como) { log(`  ${c.chave}: ${como}`); ex = await exportar(page, { tabela: false }); }
+          }
           if (!ex) { if (c.periodo) await aplicarFiltro(page); ex = await exportar(page); }
           if (!ex || !ex.csv?.trim()) {
-            const { botoes } = await estrutura(page);
-            throw new Error(`não consegui exportar · botões na tela: ${botoes.slice(0, 15).join(', ') || '(nenhum)'}`);
+            const lista = (await clicaveis(page)).map((x) => `[${x.desc}]`).slice(0, 25);
+            throw new Error(`não consegui exportar · botões do relatório: ${lista.join(' ') || '(nenhum)'}`);
           }
           log(`  ${c.chave}: ${ex.origem} (${ex.arquivo}) · ${resumoCsv(ex.csv)}`);
           files.push({ name: `${c.chave}.csv`, text: ex.csv });
@@ -434,7 +482,10 @@ async function main() {
       }
       const faltaObrigatorio = CONFIG.some((c) => c.obrigatorio && !files.find((f) => f.name === `${c.chave}.csv`));
       if (MODO === 'testar') resumo.envio = 'modo testar: nada enviado';
-      else if (faltaObrigatorio) resumo.envio = 'não enviado: faltou relatório obrigatório';
+      else if (faltaObrigatorio) {
+        resumo.envio = 'não enviado: faltou relatório obrigatório';
+        log('  NADA FOI ENVIADO AO PAINEL: sem o relatório de Comandas o robô não atualiza (para não gravar dados pela metade).');
+      }
       else if (files.length) {
         try {
           const r = await enviar(mes, files);
