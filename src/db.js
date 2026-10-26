@@ -3,30 +3,56 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const { createClient } = require('@libsql/client');
-
-function databaseUrl() {
-  const remote = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL;
-  if (remote) return remote;
-  if (process.env.VERCEL) {
-    throw new Error('Na Vercel é obrigatório um banco Turso: defina TURSO_DATABASE_URL e TURSO_AUTH_TOKEN.');
+// A integração da Vercel pode criar as variáveis com prefixo (ex.: STORAGE_TURSO_DATABASE_URL),
+// então aceitamos os nomes padrão e, na falta deles, qualquer variável que termine com o mesmo nome.
+function findEnv(names, suffixes, valueTest = () => true) {
+  for (const n of names) if (process.env[n]) return { name: n, value: process.env[n] };
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v && suffixes.some((s) => k.endsWith(s)) && valueTest(v)) return { name: k, value: v };
   }
-  const dir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
-  fs.mkdirSync(dir, { recursive: true });
-  return `file:${path.join(dir, 'dashboard.db')}`;
+  return null;
+}
+function remoteConfig() {
+  const url = findEnv(['TURSO_DATABASE_URL', 'LIBSQL_URL', 'DATABASE_URL'], ['TURSO_DATABASE_URL', '_DATABASE_URL', 'LIBSQL_URL'],
+    (v) => /^(libsql|https?|wss?):\/\//.test(v));
+  if (!url || !/^(libsql|https?|wss?):\/\//.test(url.value)) return null;
+  const token = findEnv(['TURSO_AUTH_TOKEN', 'LIBSQL_AUTH_TOKEN'], ['TURSO_AUTH_TOKEN', '_AUTH_TOKEN']);
+  return { url, token };
 }
 
-const client = createClient({
-  url: databaseUrl(),
-  authToken: process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN,
-});
+let client;
+function getClient() {
+  if (client) return client;
+  const remote = remoteConfig();
+  if (remote) {
+    // Cliente só HTTP: não depende do módulo nativo do SQLite (que pode faltar no pacote da Vercel)
+    const { createClient } = require('@libsql/client/web');
+    client = createClient({ url: remote.url.value, authToken: remote.token?.value });
+  } else {
+    if (process.env.VERCEL) {
+      throw new Error('Banco não configurado: na Vercel crie um banco Turso (Storage → Turso) e defina TURSO_DATABASE_URL e TURSO_AUTH_TOKEN.');
+    }
+    const dir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+    fs.mkdirSync(dir, { recursive: true });
+    const { createClient } = require('@libsql/client');
+    client = createClient({ url: `file:${path.join(dir, 'dashboard.db')}` });
+  }
+  return client;
+}
+
+// Diagnóstico sem expor segredos: quais variáveis foram encontradas
+function databaseInfo() {
+  const remote = remoteConfig();
+  if (remote) return { tipo: 'turso', variavel_url: remote.url.name, variavel_token: remote.token?.name || null, host: remote.url.value.replace(/^[a-z]+:\/\//, '').split('/')[0] };
+  return { tipo: process.env.VERCEL ? 'nao_configurado' : 'arquivo_local' };
+}
 
 const normArgs = (args) => args.map((a) => (a === undefined ? null : typeof a === 'boolean' ? (a ? 1 : 0) : a));
 const toObj = (rs, row) => Object.fromEntries(rs.columns.map((c, i) => [c, row[i]]));
 
 // Mesma interface para o cliente e para transações: get (1 linha), all (todas), run (escrita)
-function executor(ex) {
-  const exec = (sql, args) => ex.execute({ sql, args: normArgs(args) });
+function executor(getEx) {
+  const exec = (sql, args) => getEx().execute({ sql, args: normArgs(args) });
   return {
     async get(sql, ...args) { const rs = await exec(sql, args); return rs.rows[0] ? toObj(rs, rs.rows[0]) : undefined; },
     async all(sql, ...args) { const rs = await exec(sql, args); return rs.rows.map((r) => toObj(rs, r)); },
@@ -37,12 +63,12 @@ function executor(ex) {
   };
 }
 
-const db = executor(client);
+const db = executor(getClient);
 
 async function tx(fn) {
-  const t = await client.transaction('write');
+  const t = await getClient().transaction('write');
   try {
-    const result = await fn(executor(t));
+    const result = await fn(executor(() => t));
     await t.commit();
     return result;
   } catch (e) {
@@ -154,7 +180,7 @@ async function ensureSecret(key, bytes = 32) {
 }
 
 async function migrate() {
-  await client.executeMultiple(SCHEMA);
+  await getClient().executeMultiple(SCHEMA);
 }
 
-module.exports = { db, tx, getSetting, setSetting, getAllSettings, ensureSecret, migrate, DEFAULT_EXTRAS };
+module.exports = { db, tx, getSetting, setSetting, getAllSettings, ensureSecret, migrate, databaseInfo, DEFAULT_EXTRAS };

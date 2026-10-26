@@ -1,7 +1,7 @@
 // Aplicação Express (API). Usada pelo servidor local (server.js) e pela função da Vercel (api/index.js).
 const crypto = require('node:crypto');
 const express = require('express');
-const { db, tx, getAllSettings, setSetting, ensureSecret, migrate } = require('./db');
+const { db, tx, getAllSettings, setSetting, ensureSecret, migrate, databaseInfo } = require('./db');
 const auth = require('./auth');
 const metrics = require('./metrics');
 const webhook = require('./webhook');
@@ -24,6 +24,31 @@ function init() {
 const app = express();
 app.set('trust proxy', true);
 app.disable('x-powered-by');
+// Diagnóstico da hospedagem (não exige login e não mostra segredos): abra /api/health no navegador
+app.get('/api/health', async (_req, res) => {
+  const out = {
+    ok: false,
+    ambiente: process.env.VERCEL ? 'vercel' : 'servidor',
+    node: process.version,
+    variaveis: {
+      ADMIN_USER: process.env.ADMIN_USER ? 'definida' : 'padrão (barbeariapatria@gmail.com)',
+      ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ? 'definida' : 'FALTANDO: cadastre a senha do painel',
+      SESSION_SECRET: process.env.SESSION_SECRET ? 'definida' : 'opcional (gerada no banco)',
+    },
+    banco: null,
+  };
+  try {
+    out.banco = databaseInfo();
+    await init();
+    await db.get('SELECT 1 AS ok');
+    out.banco.conexao = 'ok';
+    out.ok = true;
+  } catch (e) {
+    out.erro = e.message;
+  }
+  res.status(out.ok ? 200 : 500).json(out);
+});
+
 app.use(async (_req, res, next) => {
   try { await init(); next(); } catch (e) { console.error(e); res.status(500).json({ error: `Falha ao iniciar o banco de dados: ${e.message}` }); }
 });
@@ -302,6 +327,6 @@ app.get('/api/webhooks/cashbarber', (_req, res) => res.json({ ok: true, info: 'E
 
 app.all('/api/*', (_req, res) => res.status(404).json({ error: 'Rota não encontrada' }));
 // eslint-disable-next-line no-unused-vars
-app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: 'Erro interno' }); });
+app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: `Erro no servidor: ${err.message}` }); });
 
 module.exports = { app, init };

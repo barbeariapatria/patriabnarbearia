@@ -102,9 +102,14 @@
       credentials: 'same-origin',
     });
     let data = null;
-    try { data = await res.json(); } catch {}
+    const raw = await res.text();
+    try { data = JSON.parse(raw); } catch {}
     if (res.status === 401 && !path.startsWith('/api/auth/login')) { state.user = null; renderLogin(); throw new Error('Sessão expirada'); }
-    if (!res.ok) throw new Error(data?.error || `Erro ${res.status}`);
+    if (!res.ok) {
+      // Resposta sem JSON (ex.: a hospedagem derrubou a função): mostra o código e um trecho do erro
+      const detail = data?.error || raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+      throw new Error(`Erro ${res.status}${detail ? `: ${detail}` : ''}${res.status >= 500 && !data?.error ? ' · veja /api/health' : ''}`);
+    }
     return data;
   }
 
