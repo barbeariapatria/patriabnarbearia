@@ -7,13 +7,14 @@
   "scripts": {
     "start": "node --no-warnings server.js",
     "dev": "node --no-warnings --watch server.js",
-    "build": "tsc -p web/tsconfig.json && vite build -c web/vite.config.mts",
+    "build": "node scripts/copy-vendor.js && tsc -p web/tsconfig.json && vite build -c web/vite.config.mts",
     "dev:web": "vite build -c web/vite.config.mts --watch"
   },
   "engines": {
     "node": ">=22.5"
   },
   "dependencies": {
+    "@libsql/client": "0.17.3",
     "chart.js": "4.4.7",
     "express": "4.21.2"
   },

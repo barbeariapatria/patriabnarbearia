@@ -10,10 +10,15 @@ const daysInMonth = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 const weekday = (y, m, d) => new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// "Hoje" no fuso da barbearia; servidores na nuvem (Vercel) rodam em UTC
+const TIME_ZONE = process.env.APP_TZ || 'America/Sao_Paulo';
+const dateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
+function todayIso(date = new Date()) {
+  return dateFmt.format(date); // AAAA-MM-DD
+}
 function todayParts() {
-  // Data local do servidor (configure TZ=America/Sao_Paulo no deploy)
-  const t = new Date();
-  return { y: t.getFullYear(), m: t.getMonth() + 1, d: t.getDate() };
+  const [y, m, d] = todayIso().split('-').map(Number);
+  return { y, m, d };
 }
 
 function isWorkingDay(y, m, d, settings) {
@@ -21,11 +26,10 @@ function isWorkingDay(y, m, d, settings) {
   return !(settings.feriados || []).includes(iso(y, m, d));
 }
 
-function getMonthDays(y, m) {
-  const rows = db.prepare('SELECT * FROM daily_revenue WHERE date >= ? AND date <= ?')
-    .all(iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
+async function getMonthDays(y, m, settings) {
+  settings = settings || (await getAllSettings());
+  const rows = await db.all('SELECT * FROM daily_revenue WHERE date >= ? AND date <= ?', iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
   const byDate = Object.fromEntries(rows.map((r) => [r.date, r]));
-  const settings = getAllSettings();
   const out = [];
   for (let d = 1; d <= daysInMonth(y, m); d++) {
     const date = iso(y, m, d);
@@ -75,9 +79,11 @@ function periodSummary(days, from, to, refDay, meta, metric) {
   };
 }
 
-function dashboard(y, m) {
-  const settings = getAllSettings();
-  const days = getMonthDays(y, m);
+async function dashboard(y, m) {
+  const settings = await getAllSettings();
+  const pm = m === 1 ? 12 : m - 1;
+  const py = m === 1 ? y - 1 : y;
+  const [days, prevDays] = await Promise.all([getMonthDays(y, m, settings), getMonthDays(py, pm, settings)]);
   const last = daysInMonth(y, m);
   const ref = referenceDay(y, m);
   const sum = (f) => round2(days.reduce((s, d) => s + d[f], 0));
@@ -92,11 +98,7 @@ function dashboard(y, m) {
 
   const mensal = periodSummary(days, 1, last, ref, settings.meta_mensal, 'total');
   const svaMensal = periodSummary(days, 1, last, ref, settings.meta_quinzenal * 2, 'sva_assinaturas');
-
-  // Mês anterior para comparação
-  const pm = m === 1 ? 12 : m - 1;
-  const py = m === 1 ? y - 1 : y;
-  const prevTotal = round2(getMonthDays(py, pm).reduce((s, d) => s + d.total, 0));
+  const prevTotal = round2(prevDays.reduce((s, d) => s + d.total, 0));
 
   return {
     ano: y, mes: m, mes_nome: MONTHS[m - 1], unidade: settings.unidade,
@@ -113,11 +115,11 @@ function extrasOf(row) {
   try { return JSON.parse(row.extras || '{}'); } catch { return {}; }
 }
 
-function proStats(y, m) {
-  const rows = db.prepare(`
+async function proStats(y, m) {
+  const rows = await db.all(`
     SELECT p.id, p.name, p.active, pm.* FROM professionals p
     LEFT JOIN professional_monthly pm ON pm.professional_id = p.id AND pm.year = ? AND pm.month = ?
-    ORDER BY p.name`).all(y, m);
+    ORDER BY p.name`, y, m);
   const list = rows
     .filter((r) => r.active || r.year)
     .map((r) => ({
@@ -147,10 +149,10 @@ function proStats(y, m) {
   return { ano: y, mes: m, mes_nome: MONTHS[m - 1], profissionais: list, total, media };
 }
 
-function proYear(y) {
-  const rows = db.prepare(`
+async function proYear(y) {
+  const rows = await db.all(`
     SELECT p.name, pm.* FROM professional_monthly pm JOIN professionals p ON p.id = pm.professional_id
-    WHERE pm.year = ? ORDER BY pm.month`).all(y);
+    WHERE pm.year = ? ORDER BY pm.month`, y);
   const months = MONTHS.map((nome, i) => ({ mes: i + 1, nome, faturamento_total: 0, clientes: 0, assinatura: 0, profissionais: {} }));
   for (const r of rows) {
     const mo = months[r.month - 1];
@@ -159,11 +161,11 @@ function proYear(y) {
     mo.clientes += r.clientes_atendidos;
     mo.profissionais[r.name] = r.faturamento_total;
   }
-  const daily = db.prepare(`
+  const daily = await db.all(`
     SELECT CAST(substr(date, 6, 2) AS INTEGER) AS mes, SUM(servicos + produtos + novas_assinaturas + sva + recorrencia) AS total
-    FROM daily_revenue WHERE substr(date, 1, 4) = ? GROUP BY mes`).all(String(y));
+    FROM daily_revenue WHERE substr(date, 1, 4) = ? GROUP BY mes`, String(y));
   for (const d of daily) months[d.mes - 1].faturamento_unidade = round2(d.total);
   return { ano: y, meses: months };
 }
 
-module.exports = { dashboard, proStats, proYear, getMonthDays, FIELDS, MONTHS, WEEKDAYS, iso, round2, daysInMonth };
+module.exports = { dashboard, proStats, proYear, getMonthDays, todayIso, todayParts, FIELDS, MONTHS, WEEKDAYS, iso, round2, daysInMonth };

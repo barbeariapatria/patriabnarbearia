@@ -17,11 +17,13 @@ function verifyPassword(password, stored) {
   return ref.length === test.length && crypto.timingSafeEqual(ref, test);
 }
 
-function secret() {
-  return process.env.SESSION_SECRET || ensureSecret('session_secret');
+// O segredo da sessão vem do ambiente ou é gerado e guardado no banco (carregado em init())
+let sessionSecret = process.env.SESSION_SECRET || null;
+async function loadSecret() {
+  if (!sessionSecret) sessionSecret = await ensureSecret('session_secret');
 }
 function sign(data) {
-  return crypto.createHmac('sha256', secret()).update(data).digest('base64url');
+  return crypto.createHmac('sha256', sessionSecret).update(data).digest('base64url');
 }
 function createToken(user) {
   const payload = Buffer.from(JSON.stringify({ uid: user.id, exp: Date.now() + SESSION_HOURS * 3600e3 })).toString('base64url');
@@ -48,22 +50,25 @@ function parseCookies(header = '') {
   return out;
 }
 
+// Na Vercel o site é sempre HTTPS, então o cookie já sai como Secure
+const secureCookie = () => (process.env.COOKIE_SECURE === 'true' || !!process.env.VERCEL ? '; Secure' : '');
 function setSessionCookie(res, user) {
-  const secure = process.env.COOKIE_SECURE === 'true' ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${COOKIE}=${createToken(user)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_HOURS * 3600}${secure}`);
+  res.setHeader('Set-Cookie', `${COOKIE}=${createToken(user)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_HOURS * 3600}${secureCookie()}`);
 }
 function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+  res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureCookie()}`);
 }
 
 function publicUser(u) {
   return u && { id: u.id, username: u.username, name: u.name, role: u.role, must_change: !!u.must_change, last_login: u.last_login };
 }
 
-function attachUser(req, _res, next) {
-  const data = readToken(parseCookies(req.headers.cookie)[COOKIE]);
-  if (data) req.user = db.prepare('SELECT * FROM users WHERE id = ?').get(data.uid) || null;
-  next();
+async function attachUser(req, _res, next) {
+  try {
+    const data = readToken(parseCookies(req.headers.cookie)[COOKIE]);
+    if (data) req.user = (await db.get('SELECT * FROM users WHERE id = ?', data.uid)) || null;
+    next();
+  } catch (e) { next(e); }
 }
 function requireAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Não autenticado' });
@@ -75,7 +80,7 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// Limite simples de tentativas de login por IP (10 tentativas / 15 min)
+// Limite simples de tentativas de login por IP (10 tentativas / 15 min, por instância do servidor)
 const attempts = new Map();
 function loginRateLimit(req, res, next) {
   const key = req.ip;
@@ -92,26 +97,26 @@ function clearAttempts(ip) { attempts.delete(ip); }
 // Por padrão o painel tem um único login (o da barbearia). MULTI_USER=true libera o cadastro de outros usuários.
 const SINGLE_USER = process.env.MULTI_USER !== 'true';
 
-function ensureDefaultAdmin() {
+async function ensureDefaultAdmin() {
   const username = (process.env.ADMIN_USER || 'barbeariapatria@gmail.com').trim();
   const envPassword = process.env.ADMIN_PASSWORD;
-  if (SINGLE_USER) db.prepare('DELETE FROM users WHERE username <> ?').run(username);
-  const existing = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+  if (SINGLE_USER) await db.run('DELETE FROM users WHERE username <> ?', username);
+  const existing = await db.get('SELECT * FROM users WHERE username = ?', username);
   if (existing) {
     // RESET_ADMIN_PASSWORD=true redefine a senha para a de ADMIN_PASSWORD (útil se ela for esquecida)
     if (envPassword && process.env.RESET_ADMIN_PASSWORD === 'true') {
-      db.prepare("UPDATE users SET password_hash = ?, must_change = 0, role = 'admin' WHERE id = ?").run(hashPassword(envPassword), existing.id);
+      await db.run("UPDATE users SET password_hash = ?, must_change = 0, role = 'admin' WHERE id = ?", hashPassword(envPassword), existing.id);
       console.log(`🔑 Senha de ${username} redefinida a partir de ADMIN_PASSWORD.`);
     }
     return;
   }
   const password = envPassword || crypto.randomBytes(9).toString('base64url');
-  db.prepare('INSERT INTO users(username, name, password_hash, role, must_change) VALUES(?, ?, ?, ?, ?)')
-    .run(username, 'Pátria Barbearia', hashPassword(password), 'admin', envPassword ? 0 : 1);
+  await db.run('INSERT OR IGNORE INTO users(username, name, password_hash, role, must_change) VALUES(?, ?, ?, ?, ?)',
+    username, 'Pátria Barbearia', hashPassword(password), 'admin', envPassword ? 0 : 1);
   console.log(`👤 Login criado: ${username} / ${envPassword ? '(senha definida em ADMIN_PASSWORD)' : `${password}  ← senha temporária, defina ADMIN_PASSWORD`}`);
 }
 
 module.exports = {
-  hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, publicUser,
+  hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, publicUser, loadSecret,
   attachUser, requireAuth, requireAdmin, loginRateLimit, clearAttempts, ensureDefaultAdmin, SINGLE_USER,
 };

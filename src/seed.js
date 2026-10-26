@@ -1,7 +1,7 @@
 // Dados iniciais importados das planilhas "Análise de Profissionais" (Janeiro e Março)
 // e "Gráfico de resultados SVA" (metas). Os meses modelo (Prof. 1..8) não foram importados.
 const { db, tx, getSetting } = require('./db');
-const { daysInMonth, iso, round2 } = require('./metrics');
+const { daysInMonth, iso, round2, todayParts } = require('./metrics');
 
 const YEAR = 2026;
 
@@ -20,55 +20,56 @@ const PRO_DATA = [
 ];
 const EXTRA_PROS = ['Luryan'];
 
-function upsertPro(name) {
-  db.prepare('INSERT OR IGNORE INTO professionals(name) VALUES(?)').run(name);
-  return db.prepare('SELECT id FROM professionals WHERE name = ?').get(name).id;
+async function upsertPro(q, name) {
+  await q.run('INSERT OR IGNORE INTO professionals(name) VALUES(?)', name);
+  return (await q.get('SELECT id FROM professionals WHERE name = ?', name)).id;
 }
 
-function seedInitial() {
-  if (getSetting('seeded')) return;
-  tx(() => {
+async function seedInitial() {
+  if (await getSetting('seeded')) return;
+  await tx(async (q) => {
+    // marca primeiro: se outra instância já importou, a transação dela ganha e esta não duplica nada
+    const mark = await q.run("INSERT OR IGNORE INTO settings(key, value) VALUES('seeded', 'true')");
+    if (!mark.changes) return;
     for (const r of PRO_DATA) {
-      const id = upsertPro(r.name);
-      db.prepare(`INSERT OR REPLACE INTO professional_monthly(professional_id, year, month, faturamento_total, faturamento_assinatura, comissao,
+      const id = await upsertPro(q, r.name);
+      await q.run(`INSERT OR REPLACE INTO professional_monthly(professional_id, year, month, faturamento_total, faturamento_assinatura, comissao,
         ticket_medio, clientes_atendidos, geracao_demanda, servicos_realizados, venda_produtos, qtd_produtos, extras)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, YEAR, r.month, r.faturamento_total, r.faturamento_assinatura, r.comissao, r.ticket_medio, r.clientes_atendidos,
-          r.geracao_demanda, r.servicos_realizados, r.venda_produtos, r.qtd_produtos, JSON.stringify(r.extras));
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, YEAR, r.month, r.faturamento_total, r.faturamento_assinatura, r.comissao, r.ticket_medio, r.clientes_atendidos,
+      r.geracao_demanda, r.servicos_realizados, r.venda_produtos, r.qtd_produtos, JSON.stringify(r.extras));
     }
-    for (const n of EXTRA_PROS) upsertPro(n);
-    db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES('seeded', 'true')").run();
+    for (const n of EXTRA_PROS) await upsertPro(q, n);
+    console.log('🌱 Dados iniciais das planilhas importados.');
   });
-  console.log('🌱 Dados iniciais das planilhas importados.');
 }
 
 // Gera faturamento diário fictício (marcado como DEMO) para visualizar o dashboard antes da integração
-function seedDemo(y, m) {
-  const closed = getSetting('dias_fechados') || [0];
-  const today = new Date();
-  const isCurrent = today.getFullYear() === y && today.getMonth() + 1 === m;
-  const lastDay = isCurrent ? today.getDate() : daysInMonth(y, m);
+async function seedDemo(y, m) {
+  const closed = (await getSetting('dias_fechados')) || [0];
+  const t = todayParts();
+  const lastDay = t.y === y && t.m === m ? t.d : daysInMonth(y, m);
   let seed = y * 100 + m;
   const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-  tx(() => {
+  await tx(async (q) => {
     for (let d = 1; d <= daysInMonth(y, m); d++) {
       const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
       const date = iso(y, m, d);
       if (closed.includes(wd) || d > lastDay) {
-        db.prepare("INSERT OR REPLACE INTO daily_revenue(date, status) VALUES(?, 'PREVISTO')").run(date);
+        await q.run("INSERT OR REPLACE INTO daily_revenue(date, status) VALUES(?, 'PREVISTO')", date);
         continue;
       }
       const boost = wd === 5 || wd === 6 ? 1.45 : 1;
-      db.prepare(`INSERT OR REPLACE INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status)
-        VALUES(?, ?, ?, ?, ?, ?, 'DEMO')`).run(date,
-        round2((520 + rand() * 380) * boost), round2((60 + rand() * 160) * boost),
-        round2(rand() > 0.55 ? 99.9 * Math.ceil(rand() * 3) : 0), round2((900 + rand() * 900) * boost), round2(80 + rand() * 260));
+      await q.run(`INSERT OR REPLACE INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status)
+        VALUES(?, ?, ?, ?, ?, ?, 'DEMO')`, date,
+      round2((520 + rand() * 380) * boost), round2((60 + rand() * 160) * boost),
+      round2(rand() > 0.55 ? 99.9 * Math.ceil(rand() * 3) : 0), round2((900 + rand() * 900) * boost), round2(80 + rand() * 260));
     }
   });
 }
 
-function clearDemo() {
-  db.prepare("DELETE FROM daily_revenue WHERE status = 'DEMO'").run();
+async function clearDemo() {
+  await db.run("DELETE FROM daily_revenue WHERE status = 'DEMO'");
 }
 
 module.exports = { seedInitial, seedDemo, clearDemo };

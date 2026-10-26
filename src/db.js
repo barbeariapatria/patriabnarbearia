@@ -1,15 +1,59 @@
+// Banco de dados via libSQL: o mesmo SQL do SQLite roda em arquivo local (desenvolvimento, Docker/Render)
+// ou no Turso (Vercel e outras plataformas serverless, onde o disco não é persistente).
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const { DatabaseSync } = require('node:sqlite');
+const { createClient } = require('@libsql/client');
 
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+function databaseUrl() {
+  const remote = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL;
+  if (remote) return remote;
+  if (process.env.VERCEL) {
+    throw new Error('Na Vercel é obrigatório um banco Turso: defina TURSO_DATABASE_URL e TURSO_AUTH_TOKEN.');
+  }
+  const dir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+  fs.mkdirSync(dir, { recursive: true });
+  return `file:${path.join(dir, 'dashboard.db')}`;
+}
 
-const db = new DatabaseSync(path.join(DATA_DIR, 'dashboard.db'));
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+const client = createClient({
+  url: databaseUrl(),
+  authToken: process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN,
+});
 
-db.exec(`
+const normArgs = (args) => args.map((a) => (a === undefined ? null : typeof a === 'boolean' ? (a ? 1 : 0) : a));
+const toObj = (rs, row) => Object.fromEntries(rs.columns.map((c, i) => [c, row[i]]));
+
+// Mesma interface para o cliente e para transações: get (1 linha), all (todas), run (escrita)
+function executor(ex) {
+  const exec = (sql, args) => ex.execute({ sql, args: normArgs(args) });
+  return {
+    async get(sql, ...args) { const rs = await exec(sql, args); return rs.rows[0] ? toObj(rs, rs.rows[0]) : undefined; },
+    async all(sql, ...args) { const rs = await exec(sql, args); return rs.rows.map((r) => toObj(rs, r)); },
+    async run(sql, ...args) {
+      const rs = await exec(sql, args);
+      return { changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid === undefined ? undefined : Number(rs.lastInsertRowid) };
+    },
+  };
+}
+
+const db = executor(client);
+
+async function tx(fn) {
+  const t = await client.transaction('write');
+  try {
+    const result = await fn(executor(t));
+    await t.commit();
+    return result;
+  } catch (e) {
+    await t.rollback().catch(() => {});
+    throw e;
+  } finally {
+    t.close();
+  }
+}
+
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT UNIQUE NOT NULL COLLATE NOCASE,
@@ -42,7 +86,7 @@ CREATE TABLE IF NOT EXISTS professionals (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS professional_monthly (
-  professional_id INTEGER NOT NULL REFERENCES professionals(id) ON DELETE CASCADE,
+  professional_id INTEGER NOT NULL,
   year INTEGER NOT NULL,
   month INTEGER NOT NULL,
   faturamento_total REAL NOT NULL DEFAULT 0,
@@ -69,7 +113,7 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_ext ON webhook_events(external_id);
-`);
+`;
 
 const DEFAULT_EXTRAS = [
   'SOBRANCELHA', 'SOBRANCELHA (CERA)', 'SELAGEM', 'SPA CAPILAR', 'BARBOTERAPIA',
@@ -88,32 +132,29 @@ const DEFAULT_SETTINGS = {
   outgoing_webhook_url: '',
 };
 
-function getSetting(key) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  if (!row) return DEFAULT_SETTINGS[key];
-  try { return JSON.parse(row.value); } catch { return row.value; }
+const parse = (v) => { try { return JSON.parse(v); } catch { return v; } };
+
+async function getSetting(key) {
+  const row = await db.get('SELECT value FROM settings WHERE key = ?', key);
+  return row ? parse(row.value) : DEFAULT_SETTINGS[key];
 }
-function setSetting(key, value) {
-  db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-    .run(key, JSON.stringify(value));
+async function setSetting(key, value) {
+  await db.run('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(value));
 }
-function getAllSettings() {
+async function getAllSettings() {
   const out = { ...DEFAULT_SETTINGS };
-  for (const r of db.prepare('SELECT key, value FROM settings').all()) {
-    try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }
-  }
+  for (const r of await db.all('SELECT key, value FROM settings')) out[r.key] = parse(r.value);
   return out;
 }
 
-function ensureSecret(key, bytes = 32) {
-  let v = getSetting(key);
-  if (!v) { v = crypto.randomBytes(bytes).toString('hex'); setSetting(key, v); }
-  return v;
+// Gera o segredo uma única vez; INSERT OR IGNORE evita sobrescrever se duas instâncias iniciarem juntas
+async function ensureSecret(key, bytes = 32) {
+  await db.run('INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)', key, JSON.stringify(crypto.randomBytes(bytes).toString('hex')));
+  return getSetting(key);
 }
 
-function tx(fn) {
-  db.exec('BEGIN');
-  try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; }
+async function migrate() {
+  await client.executeMultiple(SCHEMA);
 }
 
-module.exports = { db, getSetting, setSetting, getAllSettings, ensureSecret, tx, DEFAULT_EXTRAS };
+module.exports = { db, tx, getSetting, setSetting, getAllSettings, ensureSecret, migrate, DEFAULT_EXTRAS };

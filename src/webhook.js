@@ -1,7 +1,7 @@
 // Processamento de eventos recebidos do CashBarber (ou qualquer sistema/automação, ex.: n8n, Make, Zapier).
 // O formato é flexível: aceita nomes de campos em português ou inglês e valores como "R$ 1.234,56".
 const { db, getSetting, tx } = require('./db');
-const { dashboard, round2 } = require('./metrics');
+const { dashboard, round2, todayIso, todayParts } = require('./metrics');
 
 const ALIASES = {
   event: ['event', 'evento', 'type', 'tipo_evento', 'action'],
@@ -35,14 +35,14 @@ function toNumber(v) {
 }
 
 function toDate(v) {
-  if (!v) return new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD local
+  if (!v) return todayIso();
   const s = String(v).trim();
   let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
   if (m) return `${m[3]}-${m[2]}-${m[1]}`;
   const d = new Date(s);
-  if (!Number.isNaN(d.getTime())) return d.toLocaleDateString('sv-SE');
+  if (!Number.isNaN(d.getTime())) return todayIso(d);
   throw new Error(`Data inválida: ${s}`);
 }
 
@@ -66,28 +66,28 @@ const EVENT_KIND = (e) => {
   return 'sale';
 };
 
-function findOrCreatePro(name, externalId) {
+async function findOrCreatePro(q, name, externalId) {
   const clean = String(name).trim();
-  let pro = externalId ? db.prepare('SELECT * FROM professionals WHERE external_id = ?').get(String(externalId)) : null;
-  if (!pro) pro = db.prepare('SELECT * FROM professionals WHERE name = ?').get(clean);
+  let pro = externalId ? await q.get('SELECT * FROM professionals WHERE external_id = ?', String(externalId)) : null;
+  if (!pro) pro = await q.get('SELECT * FROM professionals WHERE name = ?', clean);
   if (!pro) {
-    const r = db.prepare('INSERT INTO professionals(name, external_id) VALUES(?, ?)').run(clean, externalId ? String(externalId) : null);
-    pro = db.prepare('SELECT * FROM professionals WHERE id = ?').get(r.lastInsertRowid);
+    await q.run('INSERT OR IGNORE INTO professionals(name, external_id) VALUES(?, ?)', clean, externalId ? String(externalId) : null);
+    pro = await q.get('SELECT * FROM professionals WHERE name = ?', clean);
   }
   return pro;
 }
 
-function ensureMonthly(proId, y, m) {
-  db.prepare('INSERT OR IGNORE INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?)').run(proId, y, m);
-  return db.prepare('SELECT * FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?').get(proId, y, m);
+async function ensureMonthly(q, proId, y, m) {
+  await q.run('INSERT OR IGNORE INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?)', proId, y, m);
+  return q.get('SELECT * FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?', proId, y, m);
 }
 
 // Interpreta o payload e devolve o "plano" de alterações (usado também no modo simulação)
-function parseSale(p) {
+function parseSale(p, catalogNames) {
   const values = { servicos: 0, produtos: 0, novas_assinaturas: 0, sva: 0, recorrencia: 0 };
   const extras = {};
   let qtdServicos = 0; let qtdProdutos = 0;
-  const catalog = (getSetting('extras_catalog') || []).map((n) => [normalize(n), n]);
+  const catalog = (catalogNames || []).map((n) => [normalize(n), n]);
   const itens = pick(p, 'itens');
   const explicit = {};
   for (const f of Object.keys(values)) { const v = pick(p, f); if (v !== undefined && typeof v !== 'object') explicit[f] = toNumber(v); }
@@ -130,59 +130,62 @@ function parseSale(p) {
   };
 }
 
-function applySale(plan, sign) {
+async function applySale(q, plan, sign) {
   const [y, m] = plan.date.split('-').map(Number);
   const v = plan.values;
-  db.prepare(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
+  await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
     VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
     ON CONFLICT(date) DO UPDATE SET servicos = servicos + excluded.servicos, produtos = produtos + excluded.produtos,
       novas_assinaturas = novas_assinaturas + excluded.novas_assinaturas, sva = sva + excluded.sva,
-      recorrencia = recorrencia + excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`)
-    .run(plan.date, sign * v.servicos, sign * v.produtos, sign * v.novas_assinaturas, sign * v.sva, sign * v.recorrencia);
+      recorrencia = recorrencia + excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
+  plan.date, sign * v.servicos, sign * v.produtos, sign * v.novas_assinaturas, sign * v.sva, sign * v.recorrencia);
 
   if (!plan.profissional) return;
-  const pro = findOrCreatePro(plan.profissional, plan.profissional_id_externo);
-  const row = ensureMonthly(pro.id, y, m);
+  const pro = await findOrCreatePro(q, plan.profissional, plan.profissional_id_externo);
+  const row = await ensureMonthly(q, pro.id, y, m);
   const extras = JSON.parse(row.extras || '{}');
-  for (const [k, q] of Object.entries(plan.extras)) extras[k] = Math.max(0, (extras[k] || 0) + sign * q);
+  for (const [k, n] of Object.entries(plan.extras)) extras[k] = Math.max(0, (extras[k] || 0) + sign * n);
   const fat = row.faturamento_total + sign * plan.total;
   const clientes = Math.max(0, row.clientes_atendidos + sign * plan.clientes);
-  db.prepare(`UPDATE professional_monthly SET
+  await q.run(`UPDATE professional_monthly SET
       faturamento_total = ?, faturamento_assinatura = faturamento_assinatura + ?, comissao = comissao + ?,
       clientes_atendidos = ?, geracao_demanda = MAX(0, geracao_demanda + ?), servicos_realizados = MAX(0, servicos_realizados + ?),
       venda_produtos = venda_produtos + ?, qtd_produtos = MAX(0, qtd_produtos + ?), ticket_medio = ?, extras = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE professional_id = ? AND year = ? AND month = ?`)
-    .run(round2(fat), sign * (v.novas_assinaturas + v.recorrencia), sign * plan.comissao, clientes, sign * plan.geracao_demanda,
-      sign * plan.qtd_servicos, sign * v.produtos, sign * plan.qtd_produtos, clientes ? round2(fat / clientes) : 0,
-      JSON.stringify(extras), pro.id, y, m);
+    WHERE professional_id = ? AND year = ? AND month = ?`,
+  round2(fat), sign * (v.novas_assinaturas + v.recorrencia), sign * plan.comissao, clientes, sign * plan.geracao_demanda,
+  sign * plan.qtd_servicos, sign * v.produtos, sign * plan.qtd_produtos, clientes ? round2(fat / clientes) : 0,
+  JSON.stringify(extras), pro.id, y, m);
 }
 
-function applyDailyClose(p) {
+async function applyDailyClose(q, p) {
   const date = toDate(pick(p, 'date'));
   const vals = {};
   for (const f of ['servicos', 'produtos', 'novas_assinaturas', 'sva', 'recorrencia']) vals[f] = toNumber(pick(p, f));
-  db.prepare(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
+  await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
     VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
     ON CONFLICT(date) DO UPDATE SET servicos = excluded.servicos, produtos = excluded.produtos, novas_assinaturas = excluded.novas_assinaturas,
-      sva = excluded.sva, recorrencia = excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`)
-    .run(date, vals.servicos, vals.produtos, vals.novas_assinaturas, vals.sva, vals.recorrencia);
+      sva = excluded.sva, recorrencia = excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
+  date, vals.servicos, vals.produtos, vals.novas_assinaturas, vals.sva, vals.recorrencia);
   return { date, ...vals };
 }
 
-function applyProMonthly(p) {
+const PRO_FIELDS = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos'];
+
+async function applyProMonthly(q, p) {
   const name = pick(p, 'profissional');
   if (!name) throw new Error('Campo "profissional" é obrigatório');
   const y = Number(p.ano || p.year); const m = Number(p.mes || p.month);
   if (!y || !m) throw new Error('Campos "ano" e "mes" são obrigatórios');
-  const pro = findOrCreatePro(name, p.profissional_id);
-  ensureMonthly(pro.id, y, m);
-  const fields = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos'];
-  for (const f of fields) if (p[f] !== undefined) db.prepare(`UPDATE professional_monthly SET ${f} = ? WHERE professional_id = ? AND year = ? AND month = ?`).run(toNumber(p[f]), pro.id, y, m);
-  if (p.extras) db.prepare('UPDATE professional_monthly SET extras = ? WHERE professional_id = ? AND year = ? AND month = ?').run(JSON.stringify(p.extras), pro.id, y, m);
+  const pro = await findOrCreatePro(q, name, p.profissional_id);
+  await ensureMonthly(q, pro.id, y, m);
+  for (const f of PRO_FIELDS) {
+    if (p[f] !== undefined) await q.run(`UPDATE professional_monthly SET ${f} = ? WHERE professional_id = ? AND year = ? AND month = ?`, toNumber(p[f]), pro.id, y, m);
+  }
+  if (p.extras) await q.run('UPDATE professional_monthly SET extras = ? WHERE professional_id = ? AND year = ? AND month = ?', JSON.stringify(p.extras), pro.id, y, m);
   return { profissional: pro.name, ano: y, mes: m };
 }
 
-function processOne(p, { dryRun = false } = {}) {
+async function processOne(p, { dryRun = false, catalog } = {}) {
   if (!p || typeof p !== 'object') throw new Error('Payload deve ser um objeto JSON');
   const body = p.data && typeof p.data === 'object' && !Array.isArray(p.data) ? { ...p.data, event: pick(p, 'event') || pick(p.data, 'event') } : p;
   const event = pick(body, 'event') || 'venda';
@@ -191,38 +194,39 @@ function processOne(p, { dryRun = false } = {}) {
 
   if (kind === 'ping') return { event, kind, message: 'pong' };
   if (externalId && !dryRun && kind !== 'cancel') {
-    const dup = db.prepare("SELECT id FROM webhook_events WHERE external_id = ? AND status = 'processado' AND event NOT LIKE '%cancel%'").get(String(externalId));
+    const dup = await db.get("SELECT id FROM webhook_events WHERE external_id = ? AND status = 'processado' AND event NOT LIKE '%cancel%'", String(externalId));
     if (dup) return { event, kind, externalId, duplicate: true, message: `Evento ${externalId} já processado (ignorado)` };
   }
-  if (kind === 'daily_close') return { event, kind, externalId, result: dryRun ? { date: toDate(pick(body, 'date')) } : tx(() => applyDailyClose(body)) };
-  if (kind === 'pro_monthly') return { event, kind, externalId, result: dryRun ? { profissional: pick(body, 'profissional') } : tx(() => applyProMonthly(body)) };
+  if (kind === 'daily_close') return { event, kind, externalId, result: dryRun ? { date: toDate(pick(body, 'date')) } : await tx((q) => applyDailyClose(q, body)) };
+  if (kind === 'pro_monthly') return { event, kind, externalId, result: dryRun ? { profissional: pick(body, 'profissional') } : await tx((q) => applyProMonthly(q, body)) };
 
-  const plan = parseSale(body);
-  if (!dryRun) tx(() => applySale(plan, kind === 'cancel' ? -1 : 1));
+  const plan = parseSale(body, catalog || (await getSetting('extras_catalog')));
+  if (!dryRun) await tx((q) => applySale(q, plan, kind === 'cancel' ? -1 : 1));
   return { event, kind, externalId, result: plan };
 }
 
-function logEvent({ externalId, event, status, message, payload, ip }) {
-  db.prepare('INSERT INTO webhook_events(external_id, event, status, message, payload, ip) VALUES(?, ?, ?, ?, ?, ?)')
-    .run(externalId ? String(externalId) : null, event || null, status, message || null, JSON.stringify(payload).slice(0, 20000), ip || null);
+async function logEvent({ externalId, event, status, message, payload, ip }) {
+  await db.run('INSERT INTO webhook_events(external_id, event, status, message, payload, ip) VALUES(?, ?, ?, ?, ?, ?)',
+    externalId ? String(externalId) : null, event || null, status, message || null, JSON.stringify(payload ?? null).slice(0, 20000), ip || null);
 }
 
-// Notifica uma URL externa (n8n, Make, Zapier, WhatsApp bot…) com o resumo atualizado
+// Notifica uma URL externa (n8n, Make, Zapier, WhatsApp bot…) com o resumo atualizado.
+// É aguardada (com limite de 8s) porque em plataformas serverless o processo pode congelar após a resposta.
 async function notifyOutgoing(trigger) {
-  const url = getSetting('outgoing_webhook_url');
-  if (!url) return;
-  const now = new Date();
-  const d = dashboard(now.getFullYear(), now.getMonth() + 1);
-  const q = d.quinzenas[d.quinzena_atual - 1];
-  const body = {
-    evento: 'dashboard.atualizado', origem: trigger, enviado_em: now.toISOString(), unidade: d.unidade,
-    mes: `${d.mes_nome}/${d.ano}`,
-    faturamento_mes: d.mensal.realizado, meta_mensal: d.mensal.meta, percentual_meta_mensal: d.mensal.percentual,
-    meta_mensal_atingida: d.mensal.realizado >= d.mensal.meta, restante_por_dia: d.mensal.restante_por_dia,
-    quinzena: d.quinzena_atual, sva_assinaturas_quinzena: q.realizado, meta_quinzenal: q.meta,
-    percentual_quinzena: q.percentual, meta_quinzenal_atingida: q.realizado >= q.meta,
-  };
   try {
+    const url = await getSetting('outgoing_webhook_url');
+    if (!url) return;
+    const { y, m } = todayParts();
+    const d = await dashboard(y, m);
+    const q = d.quinzenas[d.quinzena_atual - 1];
+    const body = {
+      evento: 'dashboard.atualizado', origem: trigger, enviado_em: new Date().toISOString(), unidade: d.unidade,
+      mes: `${d.mes_nome}/${d.ano}`,
+      faturamento_mes: d.mensal.realizado, meta_mensal: d.mensal.meta, percentual_meta_mensal: d.mensal.percentual,
+      meta_mensal_atingida: d.mensal.realizado >= d.mensal.meta, restante_por_dia: d.mensal.restante_por_dia,
+      quinzena: d.quinzena_atual, sva_assinaturas_quinzena: q.realizado, meta_quinzenal: q.meta,
+      percentual_quinzena: q.percentual, meta_quinzenal_atingida: q.realizado >= q.meta,
+    };
     await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(8000) });
   } catch (e) { console.warn('Falha ao notificar webhook de saída:', e.message); }
 }
