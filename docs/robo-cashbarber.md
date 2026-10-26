@@ -13,7 +13,7 @@ exporta os relatórios do mês em CSV e envia para o painel, que importa como em
 
 ## Como o robô trabalha
 
-1. Entra no CashBarber (`CASHBARBER_URL`, padrão `https://app.cashbarber.com.br`). Para com erro claro se a senha for
+1. Entra no CashBarber (`CASHBARBER_URL`, padrão `https://painel.cashbarber.com.br`). Para com erro claro se a senha for
    recusada ou se aparecer captcha / código por SMS ou e-mail.
 2. Acha a página de cada relatório: pela `url` fixada em `robo/relatorios.json` ou, se vazia, pelo nome nos menus e nas
    páginas `/relatorio/relatorioN`.
@@ -58,7 +58,7 @@ reimporta o mês anterior completo (para fechar o último dia).
 - **Usuário do CashBarber:** "Robô Painel", só com permissão de ver relatórios.
 - **GitHub → Settings → Secrets and variables → Actions → Secrets:** `CASHBARBER_EMAIL`, `CASHBARBER_PASSWORD`,
   `PAINEL_URL` (ex.: https://patriabnarbearia.vercel.app) e `IMPORT_TOKEN` (o mesmo valor cadastrado na Vercel).
-  Se o endereço do CashBarber não for `https://app.cashbarber.com.br`, crie a variável `CASHBARBER_URL` (aba Variables).
+  Se o endereço do CashBarber não for `https://painel.cashbarber.com.br`, crie a variável `CASHBARBER_URL` (aba Variables).
 - **Vercel → Environment Variables:** `IMPORT_TOKEN` = um texto longo e aleatório.
 
 O GitHub desliga agendamentos de repositórios públicos sem nenhum commit por 60 dias (ele avisa por e-mail); para

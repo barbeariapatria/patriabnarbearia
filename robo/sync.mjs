@@ -3,7 +3,7 @@
 //
 // Variáveis:
 //   CASHBARBER_EMAIL, CASHBARBER_PASSWORD   login do usuário "Robô Painel" (só leitura de relatórios)
-//   CASHBARBER_URL                          endereço do sistema (padrão: https://app.cashbarber.com.br)
+//   CASHBARBER_URL                          endereço do sistema (padrão: https://painel.cashbarber.com.br)
 //   PAINEL_URL, IMPORT_TOKEN                painel na Vercel e o token cadastrado lá
 //   MODO      sincronizar (padrão) | testar (exporta e confere, sem enviar) | mapear (só levanta as páginas)
 //   MES       AAAA-MM para forçar um mês (padrão: mês corrente; no dia 1º também o mês anterior)
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const SAIDA = process.env.SAIDA || path.join(DIR, 'saida');
-const BASE = (process.env.CASHBARBER_URL || 'https://app.cashbarber.com.br').replace(/\/+$/, '');
+const BASE = (process.env.CASHBARBER_URL || 'https://painel.cashbarber.com.br').replace(/\/+$/, '');
 const MODO = (process.env.MODO || 'sincronizar').toLowerCase();
 const CONFIG = JSON.parse(fs.readFileSync(path.join(DIR, 'relatorios.json'), 'utf8')).relatorios;
 const TZ = 'America/Sao_Paulo';

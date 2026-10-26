@@ -45,7 +45,7 @@ jobs:
         env:
           CASHBARBER_EMAIL: ${{ secrets.CASHBARBER_EMAIL }}
           CASHBARBER_PASSWORD: ${{ secrets.CASHBARBER_PASSWORD }}
-          CASHBARBER_URL: ${{ vars.CASHBARBER_URL || 'https://app.cashbarber.com.br' }}
+          CASHBARBER_URL: ${{ vars.CASHBARBER_URL || 'https://painel.cashbarber.com.br' }}
           PAINEL_URL: ${{ secrets.PAINEL_URL }}
           IMPORT_TOKEN: ${{ secrets.IMPORT_TOKEN }}
           MODO: ${{ inputs.modo || 'sincronizar' }}
