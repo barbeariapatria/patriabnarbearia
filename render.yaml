@@ -1,0 +1,23 @@
+# Deploy em 1 clique no Render (Blueprint). O disco guarda o banco SQLite entre deploys.
+services:
+  - type: web
+    name: patria-painel
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/webhooks/cashbarber
+    disk:
+      name: dados
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      # Único login do painel. A senha NÃO fica no código: o Render pede para digitar no deploy.
+      - key: ADMIN_USER
+        value: barbeariapatria@gmail.com
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TZ
+        value: America/Sao_Paulo

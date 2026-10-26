@@ -1,0 +1,59 @@
+/* Tailwind v4 sem o preflight global: o painel existente tem seu próprio CSS,
+   então só o tema e as utilities entram, e o reset fica restrito a .bento-root. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+@source "./";
+
+/* Tokens shadcn — paleta preto e dourado */
+.bento-root {
+  --color-background: oklch(0.145 0.004 80);
+  --color-foreground: oklch(0.96 0.01 85);
+  --color-card: oklch(0.18 0.006 80);
+  --color-card-foreground: oklch(0.96 0.01 85);
+  --color-primary: oklch(0.8 0.13 85);
+  --color-primary-foreground: oklch(0.18 0.02 75);
+  --color-muted: oklch(0.26 0.008 80);
+  --color-muted-foreground: oklch(0.68 0.02 85);
+  --color-border: oklch(0.29 0.012 80);
+  --color-ring: oklch(0.8 0.13 85);
+  --radius: 0.75rem;
+  color: var(--color-foreground);
+  font-family: "Inter", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@theme inline {
+  --color-background: var(--color-background);
+  --color-foreground: var(--color-foreground);
+  --color-card: var(--color-card);
+  --color-card-foreground: var(--color-card-foreground);
+  --color-primary: var(--color-primary);
+  --color-primary-foreground: var(--color-primary-foreground);
+  --color-muted: var(--color-muted);
+  --color-muted-foreground: var(--color-muted-foreground);
+  --color-border: var(--color-border);
+  --color-ring: var(--color-ring);
+  --font-mono: "Sora", "Inter", ui-monospace, monospace;
+}
+
+@layer base {
+  .bento-root,
+  .bento-root *,
+  .bento-root ::before,
+  .bento-root ::after {
+    box-sizing: border-box;
+    border: 0 solid;
+    margin: 0;
+    padding: 0;
+  }
+  .bento-root button {
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+  .bento-root ul {
+    list-style: none;
+  }
+}
