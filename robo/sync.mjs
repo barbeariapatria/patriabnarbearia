@@ -75,7 +75,18 @@ async function entrar(page) {
   await campoSenha.pressSequentially(senha, { delay: 20 });
   const botao = escopo.locator('button[type="submit"]:visible, input[type="submit"]:visible')
     .or(escopo.getByRole('button', { name: /entrar|acessar|login|logar/i })).first();
-  if (await botao.count()) await botao.click(); else await campoSenha.press('Enter');
+  // alguns formulários só liberam o botão depois que o campo perde o foco
+  await campoSenha.press('Tab').catch(() => {});
+  await page.waitForTimeout(500);
+  let enviado = false;
+  if (await botao.count()) {
+    enviado = await botao.click({ timeout: 10000 }).then(() => true).catch(() => false);
+  }
+  if (!enviado) {
+    const desativado = await botao.isDisabled().catch(() => null);
+    if (desativado) log('Botão de entrar continua desativado; tentando com Enter.');
+    await campoSenha.press('Enter').catch(() => {});
+  }
   // espera sair da tela de login (até 25 s)
   await page.waitForFunction(() => ![...document.querySelectorAll('input[type="password"]')]
     .some((e) => e.offsetWidth || e.offsetHeight), null, { timeout: 25000 }).catch(() => {});
@@ -88,7 +99,7 @@ async function entrar(page) {
       const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
       return {
         campos: [...document.querySelectorAll('input')].filter(vis).map((e) => `${e.type}:${e.name || e.id || '?'}`),
-        botoes: [...document.querySelectorAll('button, input[type="submit"]')].filter(vis).map((e) => (e.innerText || e.value || '').trim()).filter(Boolean),
+        botoes: [...document.querySelectorAll('button, input[type="submit"]')].filter(vis).map((e) => `${(e.innerText || e.value || '').trim()}${e.disabled ? ' (desativado)' : ''}`).filter((t) => t.trim() && t !== ' (desativado)'),
         avisos: [...document.querySelectorAll('.alert, .error, .erro, .invalid-feedback, .text-danger, .help-block, [role="alert"], .toast, .swal2-popup, .notification')]
           .filter(vis).map((e) => e.innerText.trim()).filter(Boolean).slice(0, 5),
         textoDoFormulario: (document.querySelector('input[type="password"]')?.closest('form, .card, .login, main, body')?.innerText || '')
