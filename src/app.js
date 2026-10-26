@@ -356,6 +356,22 @@ app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
   await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios });
   return { result, plan };
 }));
+// Entrada do robô de sincronização (GitHub Actions): mesma importação, autenticada pelo token IMPORT_TOKEN
+function robotAuth(req, res, next) {
+  const token = String(process.env.IMPORT_TOKEN || '').trim();
+  const given = String(req.get('x-import-token') || '').trim();
+  const a = Buffer.from(given); const b = Buffer.from(token);
+  if (!token || a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Token do robô inválido' });
+  next();
+}
+app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
+  const files = Array.isArray(req.body?.files) ? req.body.files.filter((f) => f && typeof f.text === 'string') : [];
+  if (!files.length) throw new Error('Nenhum arquivo recebido');
+  const plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
+  const result = await importer.apply(plan);
+  await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, origem: 'robô' });
+  return { result, relatorios: plan.relatorios, ignorados: plan.ignorados };
+}));
 app.get('/api/admin/importar', auth.requireAdmin, wrap(async () => ({ ultima: (await getAllSettings()).ultima_importacao || null })));
 app.post('/api/admin/demo', auth.requireAdmin, wrap(async (req) => {
   const { y, m } = ym(req.body || {});
