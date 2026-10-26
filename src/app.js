@@ -321,6 +321,7 @@ app.put('/api/admin/relatorios/:kind', auth.requireAdmin, wrap(async (req) => {
     data.por_dia = Array.isArray(data.por_dia) ? data.por_dia : [];
   } else if (kind === 'assinaturas') {
     for (const k of ['ativos', 'inadimplentes', 'novas_no_mes', 'cancelamentos']) data[k] = data[k] === '' || data[k] == null ? null : n(data[k]);
+    data.total = data.ativos == null && data.inadimplentes == null ? null : (data.ativos || 0) + (data.inadimplentes || 0);
     data.motivos = (data.motivos || []).filter((x) => x[0]).map(([k, v]) => [String(k).trim(), n(v)]);
     data.planos = (data.planos || []).filter((x) => x[0]).map(([k, v]) => [String(k).trim(), n(v)]);
   } else {

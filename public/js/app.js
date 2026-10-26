@@ -513,6 +513,7 @@
         </div>
       </div>
 
+      ${subsHero(rep?.assinaturas)}
       <div class="grid g-6">
         ${kpi({ label: 'Faltam p/ meta', value: brl(M.restante), foot: M.restante ? `${pct(100 - Math.min(100, M.percentual))} restante` : 'Meta alcançada', ic: 'flag', tone: M.restante ? undefined : 'good' })}
         ${kpi({ label: 'Restante por dia', value: brl(M.restante_por_dia), foot: `${M.dias_uteis_restantes} dias úteis restantes`, ic: 'clock' })}
@@ -646,6 +647,7 @@
         </div>
       </div>
 
+      ${subsHero(rep?.assinaturas)}
       <div class="grid g-4">
         ${kpi({ label: 'Maior dia', value: brl(r.maior_dia?.valor), foot: r.maior_dia ? `${fmtFull(r.maior_dia.date)} · ${dayName(r.maior_dia.date)}` : '—', ic: 'star' })}
         ${kpi({ label: 'Menor dia', value: brl(r.menor_dia?.valor), foot: r.menor_dia ? `${fmtFull(r.menor_dia.date)} · ${dayName(r.menor_dia.date)}` : '—', ic: 'arrowDown' })}
@@ -719,6 +721,28 @@
 
   // ============================================================ Agenda, clube e serviços (relatórios importados)
   const rate = (n, d) => (d ? pct((n / d) * 100) : '—');
+
+  // Faixa de destaque do clube de assinatura (Painel de metas e resumo do período)
+  function subsHero(as) {
+    if (!as || as.total == null) return '';
+    const saldo = as.novas_no_periodo != null && as.cancelamentos != null ? as.novas_no_periodo - as.cancelamentos : null;
+    const emDia = as.total ? (as.ativos / as.total) * 100 : 0;
+    return `<div class="card subs-hero fade-in">
+      <div class="subs-main"><div class="eyebrow">Clube de assinatura · ${esc(as.referencia.nome)}</div>
+        <div class="subs-num num">${int(as.total)} <span>assinaturas</span></div></div>
+      <div class="subs-split">
+        <div><span class="dot good"></span><b class="num">${int(as.ativos ?? 0)}</b> em dia</div>
+        <div><span class="dot warn"></span><b class="num">${int(as.inadimplentes ?? 0)}</b> com pagamento pendente</div>
+        <div class="progress good" style="height:8px;margin-top:4px" title="${pct(emDia)} em dia"><i data-w="${emDia}" style="width:0"></i></div>
+      </div>
+      <div class="subs-flow">
+        ${as.novas_no_periodo != null ? `<div><b class="num" style="color:var(--good)">+${int(as.novas_no_periodo)}</b><span>novas</span></div>` : ''}
+        ${as.cancelamentos != null ? `<div><b class="num" style="color:var(--bad)">−${int(as.cancelamentos)}</b><span>cancelamentos</span></div>` : ''}
+        ${saldo != null ? `<div><b class="num">${saldo >= 0 ? '+' : '−'}${int(Math.abs(saldo))}</b><span>saldo</span></div>` : ''}
+      </div>
+    </div>`;
+  }
+
   function reportsSection(rep) {
     if (!rep || (!rep.agenda && !rep.assinaturas && !rep.servicos)) return '';
     const ag = rep.agenda; const as = rep.assinaturas; const sv = rep.servicos;
@@ -738,7 +762,7 @@
         </div></div>` : ''}
       ${as ? `<div class="card fade-in"><div class="card-h"><h3>${icon('ticket')} Clube de assinatura</h3><div class="grow"></div><span class="hint">base em ${as.referencia.nome}</span></div>
         <div class="grid g-2" style="gap:10px">
-          ${tile('Assinantes em dia', as.ativos ?? '—', as.inadimplentes ? `${int(as.inadimplentes)} com pagamento pendente` : '')}
+          ${tile('Assinaturas', as.total != null ? int(as.total) : '—', `${as.ativos != null ? int(as.ativos) : '—'} em dia · ${as.inadimplentes != null ? int(as.inadimplentes) : '—'} pendentes`)}
           ${tile('Novas · cancelamentos', `${as.novas_no_periodo ?? '—'} · ${as.cancelamentos ?? '—'}`, as.novas_no_periodo != null && as.cancelamentos != null ? `saldo ${as.novas_no_periodo - as.cancelamentos >= 0 ? '+' : ''}${as.novas_no_periodo - as.cancelamentos}` : '')}
         </div>
         ${as.motivos?.length ? `<div class="eyebrow" style="margin:14px 0 8px">Motivos de cancelamento</div><div class="comp-list">${as.motivos.slice(0, 5).map(([k, n]) => `<div class="comp-item"><div class="l"><span>${esc(k)}</span><b class="num">${n}</b></div><div class="bar"><i style="width:${(n / as.motivos[0][1]) * 100}%;background:var(--accent)"></i></div></div>`).join('')}</div>` : ''}
@@ -1415,10 +1439,11 @@
   async function viewHome(view) {
     if (isRange()) return viewRangeDashboard(view);
     if (!window.BarberBento) { view.innerHTML = `<div class="card">${emptyState('Página inicial não compilada', 'Rode <code>npm run build</code> para gerar /public/bento.')}</div>`; return; }
-    const [d, ps, act] = await Promise.all([
+    const [d, ps, act, rep] = await Promise.all([
       api(`/api/dashboard?ano=${state.y}&mes=${state.m}`),
       api(`/api/profissionais/stats?ano=${state.y}&mes=${state.m}`),
       api('/api/atividade?limit=6').catch(() => []),
+      api(`/api/relatorios?ano=${state.y}&mes=${state.m}`).catch(() => null),
     ]);
     $('#pageSub').textContent = `${d.unidade} · ${d.mes_nome} ${d.ano}`;
     const atividade = act.map((a) => {
@@ -1444,6 +1469,7 @@
         id: p.professional_id, name: p.name, faturamento: p.faturamento_total, clientes: p.clientes_atendidos, ticket: p.ticket_medio, comissao: p.comissao,
       })),
       atividade,
+      assinaturas: rep?.assinaturas?.total != null ? { total: rep.assinaturas.total, emDia: rep.assinaturas.ativos ?? 0, pendentes: rep.assinaturas.inadimplentes ?? 0, novas: rep.assinaturas.novas_no_periodo, cancelamentos: rep.assinaturas.cancelamentos } : null,
       onNavigate: (path) => { location.hash = `#/${path}`; },
     };
     const banner = state.user.must_change ? `<div class="banner">${icon('alert')}<div class="grow"><b>Segurança:</b> você está usando a senha padrão. Altere agora para proteger o painel.</div><button class="btn btn-sm" id="chgPwd">Alterar senha</button></div>` : '';
@@ -1603,6 +1629,7 @@
           <div class="form-grid">
             <div class="field"><label>Assinantes em dia</label><input class="input num" id="asAtivos" value="${a.ativos ?? ''}" inputmode="numeric"></div>
             <div class="field"><label>Com pagamento pendente</label><input class="input num" id="asInad" value="${a.inadimplentes ?? ''}" inputmode="numeric"></div>
+            <p class="muted" style="grid-column:1/-1;margin:-4px 0 12px;font-size:12.5px">Total de assinaturas = em dia + pendentes: <b style="color:var(--text)" id="asTotal">${a.ativos != null || a.inadimplentes != null ? int((Number(a.ativos) || 0) + (Number(a.inadimplentes) || 0)) : '—'}</b></p>
             <div class="field"><label>Novas assinaturas no mês</label><input class="input num" id="asNovas" value="${a.novas_no_mes ?? ''}" inputmode="numeric"></div>
             <div class="field"><label>Cancelamentos no mês</label><input class="input num" id="asCanc" value="${a.cancelamentos ?? ''}" inputmode="numeric"></div>
           </div>
@@ -1658,6 +1685,7 @@
       save('agenda', { profissionais, por_dia: ag.data?.por_dia || [] }, 'Agenda');
     };
     const parseLines = (txt) => txt.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const i = l.lastIndexOf(':'); return i > 0 ? [l.slice(0, i).trim(), parseBR(l.slice(i + 1))] : [l, 0]; });
+    ['#asAtivos', '#asInad'].forEach((sel) => $(sel).addEventListener('input', () => { $('#asTotal').textContent = int(parseBR($('#asAtivos').value) + parseBR($('#asInad').value)); }));
     $('#saveAs').onclick = () => save('assinaturas', {
       ativos: $('#asAtivos').value, inadimplentes: $('#asInad').value, novas_no_mes: $('#asNovas').value, cancelamentos: $('#asCanc').value,
       motivos: parseLines($('#asMotivos').value), planos: parseLines($('#asPlanos').value),

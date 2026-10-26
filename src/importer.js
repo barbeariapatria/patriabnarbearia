@@ -267,6 +267,7 @@ async function analyze(files, escolhido = {}) {
     for (const r of reports.assinantes || []) if (r.CLIENTE && r.PLANO && normalize(r.STATUS) === 'EM DIA') planos[r.PLANO] = (planos[r.PLANO] || 0) + 1;
     const cancelMes = (reports.cancelamentos || []).filter((r) => brDate(r['DATA DE CANCELAMENTO'])?.startsWith(mesIso));
     assinaturas = {
+      total: reports.assinantes ? reports.assinantes.filter((r) => r.CLIENTE && normalize(r.STATUS)).length : null,
       ativos: reports.assinantes ? reports.assinantes.filter((r) => normalize(r.STATUS) === 'EM DIA').length : null,
       inadimplentes: reports.assinantes ? reports.assinantes.filter((r) => r.CLIENTE && !['EM DIA', ''].includes(normalize(r.STATUS))).length : null,
       novas_no_mes: reports.assinantes ? reports.assinantes.filter((r) => brDate(r['DATA DE CRIACAO'])?.startsWith(mesIso)).length : null,

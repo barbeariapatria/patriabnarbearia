@@ -336,6 +336,7 @@ async function monthlyReports({ y, m, de, ate }) {
     const sumField = (k) => (assRows.some((r) => r.data[k] != null) ? assRows.reduce((acc, r) => acc + (r.data[k] || 0), 0) : null);
     assinaturas = {
       referencia: { ano: last.ano, mes: last.mes, nome: `${MONTHS[last.mes - 1]}/${last.ano}` },
+      total: last.data.total ?? (last.data.ativos != null ? (last.data.ativos || 0) + (last.data.inadimplentes || 0) : null),
       ativos: last.data.ativos, inadimplentes: last.data.inadimplentes, planos: last.data.planos || [],
       novas_no_periodo: sumField('novas_no_mes'),
       cancelamentos: sumField('cancelamentos'),

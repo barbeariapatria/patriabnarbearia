@@ -76,6 +76,8 @@ export interface BarberBentoProps {
   composicao: { label: string; value: number }[];
   profissionais: BarberPro[];
   atividade: BarberActivity[];
+  /** Base do clube de assinatura (do relatório de assinantes do CashBarber) */
+  assinaturas?: { total: number; emDia: number; pendentes: number; novas?: number | null; cancelamentos?: number | null } | null;
   /** Dourado principal e bronze secundário */
   accent?: string;
   accent2?: string;
@@ -239,6 +241,16 @@ function HeroTile({ p, accent, accent2, reduced }: { p: BarberBentoProps; accent
             )}
             <span className="text-muted-foreground"> · vs mês anterior</span>
           </p>
+          {p.assinaturas && (
+            <p className="mt-3 inline-flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-[12.5px]">
+              <Crown size={14} strokeWidth={2} style={{ color: accent }} aria-hidden />
+              <span className="font-mono font-semibold tabular-nums">{p.assinaturas.total.toLocaleString("pt-BR")}</span>
+              <span className="text-muted-foreground">assinaturas</span>
+              <span className="text-muted-foreground">·</span>
+              <span className="font-mono tabular-nums">{p.assinaturas.emDia.toLocaleString("pt-BR")}</span>
+              <span className="text-muted-foreground">em dia</span>
+            </p>
+          )}
         </div>
       </div>
 
@@ -1057,6 +1069,12 @@ export function BarberBento(props: BarberBentoProps) {
           <span className="size-2 rounded-full" style={{ background: accent }} aria-hidden />
           {props.unidade}
         </span>
+        {props.assinaturas && (
+          <span className="flex items-center gap-2 rounded-full border border-border px-3 py-1.5 text-[12px] font-medium">
+            <Crown size={13} strokeWidth={2} style={{ color: accent }} aria-hidden />
+            {props.assinaturas.total.toLocaleString("pt-BR")} assinaturas
+          </span>
+        )}
         <span className="rounded-full bg-primary px-3 py-1.5 font-mono text-[12px] font-semibold text-primary-foreground">
           {props.mesNome} {props.ano} · dia {props.diaApuracao || "—"}
         </span>
