@@ -262,7 +262,7 @@ async function lerAviso(page) {
 // Escolhe a filial nos filtros do relatório. Vazio, o CashBarber entende "todas as filiais" e o usuário do robô
 // recebe "Você não possui acesso a todas as filiais". Acha o campo pelo rótulo "Filial"/"Unidade" e escolhe a opção
 // da Pátria (CASHBARBER_FILIAL muda o nome procurado) ou a única opção real. Nunca mexe em profissional, cliente etc.
-const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'p[aá]tria', 'i');
+const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'village|rio das ostras|p[aá]tria', 'i');
 const RE_OPCAO_GERAL = /^(todas?|todos|selecione|nenhum|--)/i;
 async function escolherFilial(page) {
   const campos = await page.evaluate(() => {
@@ -291,7 +291,7 @@ async function escolherFilial(page) {
     if (c.select) {
       // <select> comum, select2 ou bootstrap-select (o <select> fica escondido)
       const op = escolher(c.select.opcoes.filter((o) => o.v !== ''));
-      if (!op) { log(`  (filial: ${c.select.opcoes.length} opções e nenhuma com "Pátria")`); continue; }
+      if (!op) { log(`  (filial: ${c.select.opcoes.length} opções e nenhuma da filial Village Rio das Ostras/Pátria)`); continue; }
       if (c.select.atual === op.t) { feitos.push(`filial "${op.t}" (já marcada)`); continue; }
       await box.locator('select').first().evaluate((sel, v) => {
         for (const o of sel.options) o.selected = sel.multiple ? (o.selected || o.value === v) : o.value === v;
@@ -316,7 +316,7 @@ async function escolherFilial(page) {
       feitos.push(`filial "${op.t}"`);
     } else {
       await page.keyboard.press('Escape').catch(() => {});
-      log(`  (filial: lista com ${textos.length} opções e nenhuma com "Pátria")`);
+      log(`  (filial: lista com ${textos.length} opções e nenhuma da filial Village Rio das Ostras/Pátria)`);
     }
   }
   if (!campos.length) return feitos;
