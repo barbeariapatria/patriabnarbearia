@@ -30,19 +30,18 @@ app.get('/api/health', async (_req, res) => {
     ok: false,
     ambiente: process.env.VERCEL ? 'vercel' : 'servidor',
     node: process.version,
-    variaveis: {
-      ADMIN_USER: process.env.ADMIN_USER ? 'definida' : 'padrão (barbeariapatria@gmail.com)',
-      ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ? 'definida' : 'FALTANDO: cadastre a senha do painel',
-      SESSION_SECRET: process.env.SESSION_SECRET ? 'definida' : 'opcional (gerada no banco)',
-    },
     banco: null,
+    login: null,
+    session_secret: process.env.SESSION_SECRET ? 'definida' : 'opcional (gerada no banco)',
   };
   try {
     out.banco = databaseInfo();
     await init();
     await db.get('SELECT 1 AS ok');
     out.banco.conexao = 'ok';
-    out.ok = true;
+    out.login = await auth.adminStatus();
+    out.ok = out.login.senha_do_banco_confere;
+    if (!out.ok) out.erro = 'O login do banco não confere com ADMIN_USER/ADMIN_PASSWORD desta implantação. Confira as variáveis em Production e faça Redeploy.';
   } catch (e) {
     out.erro = e.message;
   }
@@ -75,7 +74,11 @@ const wrap = (fn) => async (req, res) => {
 app.post('/api/auth/login', auth.loginRateLimit, wrap(async (req, res) => {
   const { username, password } = req.body || {};
   const user = username && (await db.get('SELECT * FROM users WHERE lower(username) = lower(?)', String(username).trim()));
-  if (!user || !auth.verifyPassword(String(password || ''), user.password_hash)) {
+  const senha = String(password || '');
+  // aceita a senha com espaços acidentais nas pontas (teclado do celular, copiar e colar)
+  const ok = user && (auth.verifyPassword(senha, user.password_hash) || (senha.trim() !== senha && auth.verifyPassword(senha.trim(), user.password_hash)));
+  if (!ok) {
+    console.warn(`Login recusado para "${String(username || '').slice(0, 80)}": ${user ? 'senha incorreta' : 'usuário não cadastrado'}`);
     res.status(401).json({ error: 'Você não tem acesso' });
     return;
   }

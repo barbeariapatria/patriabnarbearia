@@ -97,11 +97,28 @@ function clearAttempts(ip) { attempts.delete(ip); }
 // Por padrão o painel tem um único login (o da barbearia). MULTI_USER=true libera o cadastro de outros usuários.
 const SINGLE_USER = process.env.MULTI_USER !== 'true';
 // Com ADMIN_PASSWORD definida, a senha é gerenciada na hospedagem e não pode ser trocada pelo painel
-const PASSWORD_MANAGED = !!process.env.ADMIN_PASSWORD;
+// Valores colados no painel da hospedagem às vezes vêm com aspas ou espaços: "@senha" → @senha
+const cleanEnv = (v) => String(v ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+const adminUser = () => cleanEnv(process.env.ADMIN_USER) || 'barbeariapatria@gmail.com';
+const adminPassword = () => cleanEnv(process.env.ADMIN_PASSWORD) || null;
+const PASSWORD_MANAGED = !!adminPassword();
+
+// Diagnóstico do login para /api/health: diz se o login do banco confere com as variáveis, sem revelar a senha
+async function adminStatus() {
+  const raw = process.env.ADMIN_PASSWORD;
+  const user = await db.get('SELECT username, password_hash FROM users WHERE lower(username) = lower(?)', adminUser());
+  return {
+    usuario: adminUser(),
+    senha_variavel: adminPassword() ? `definida (${adminPassword().length} caracteres)` : 'FALTANDO: cadastre ADMIN_PASSWORD em Production e faça Redeploy',
+    senha_tinha_aspas_ou_espacos: raw ? raw !== adminPassword() : false,
+    login_no_banco: !!user,
+    senha_do_banco_confere: user && adminPassword() ? verifyPassword(adminPassword(), user.password_hash) : false,
+  };
+}
 
 async function ensureDefaultAdmin() {
-  const username = (process.env.ADMIN_USER || 'barbeariapatria@gmail.com').trim();
-  const envPassword = process.env.ADMIN_PASSWORD;
+  const username = adminUser();
+  const envPassword = adminPassword();
   if (SINGLE_USER) await db.run('DELETE FROM users WHERE lower(username) <> lower(?)', username);
   const existing = await db.get('SELECT * FROM users WHERE lower(username) = lower(?)', username);
   if (existing) {
@@ -119,6 +136,6 @@ async function ensureDefaultAdmin() {
 }
 
 module.exports = {
-  hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, publicUser, loadSecret,
+  hashPassword, verifyPassword, adminStatus, setSessionCookie, clearSessionCookie, publicUser, loadSecret,
   attachUser, requireAuth, requireAdmin, loginRateLimit, clearAttempts, ensureDefaultAdmin, SINGLE_USER, PASSWORD_MANAGED,
 };
