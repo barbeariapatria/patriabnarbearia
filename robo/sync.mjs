@@ -458,17 +458,46 @@ function resumoCsv(csv) {
 }
 
 // ---------------------------------------------------------------- envio ao painel
+// explica uma resposta de erro do painel (ou de quem respondeu no lugar dele, como a proteção da Vercel)
+async function explicarErro(r) {
+  const texto = await r.text().catch(() => '');
+  let msg = '';
+  try {
+    const j = JSON.parse(texto);
+    const e = j.error ?? j.message ?? j;
+    msg = typeof e === 'string' ? e : [e.code, e.message].filter(Boolean).join(': ') || JSON.stringify(e).slice(0, 200);
+  } catch { msg = /<html|<!doctype/i.test(texto) ? `página HTML (${(texto.match(/<title>([^<]*)/i) || [])[1] || 'sem título'})` : texto.slice(0, 200); }
+  const quem = r.headers.get('x-vercel-id') ? 'Vercel' : (r.headers.get('server') || 'servidor');
+  let dica = '';
+  if (r.status === 401 && msg === 'Token do robô inválido') dica = ' → o IMPORT_TOKEN do GitHub é diferente do cadastrado na Vercel, ou a Vercel ainda não foi reimplantada (Redeploy) depois de cadastrar.';
+  else if (r.status === 401 || r.status === 403) dica = ' → quem recusou não foi o painel: confira se PAINEL_URL é o endereço de produção (ex.: https://patriabnarbearia.vercel.app) e se a "Deployment Protection" da Vercel está desligada para ele.';
+  else if (r.status === 404) dica = ' → o endereço em PAINEL_URL não tem o painel (confira o domínio) ou a versão no ar ainda não tem a entrada do robô.';
+  return `Painel respondeu ${r.status} (${quem}): ${msg || 'sem mensagem'}${dica}`;
+}
+
 async function enviar(mes, files) {
   const url = (process.env.PAINEL_URL || '').replace(/\/+$/, '');
   if (!url || !process.env.IMPORT_TOKEN) throw new Error('Faltam PAINEL_URL e/ou IMPORT_TOKEN.');
   const corpo = JSON.stringify({ ano: mes.ano, mes: mes.mes, files });
   if (corpo.length > 4 * 1024 * 1024) throw new Error(`Os relatórios somam ${(corpo.length / 1048576).toFixed(1)} MB; o painel aceita até 4 MB por envio.`);
   const r = await fetch(`${url}/api/robo/importar`, {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-import-token': process.env.IMPORT_TOKEN }, body: corpo,
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-import-token': process.env.IMPORT_TOKEN.trim() }, body: corpo,
   });
-  const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`Painel respondeu ${r.status}: ${json.error || 'erro sem mensagem'}`);
-  return json;
+  if (!r.ok) throw new Error(await explicarErro(r));
+  return r.json();
+}
+
+// confere logo no começo se o painel aceita o robô (sem enviar dados), para não perder a execução inteira
+async function verificarPainel() {
+  const url = (process.env.PAINEL_URL || '').replace(/\/+$/, '');
+  if (!url || !process.env.IMPORT_TOKEN) throw new Error('Faltam PAINEL_URL e/ou IMPORT_TOKEN.');
+  if (!/^https?:\/\//.test(url)) throw new Error('PAINEL_URL precisa começar com https:// (ex.: https://patriabnarbearia.vercel.app).');
+  const r = await fetch(`${url}/api/robo/importar`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-import-token': process.env.IMPORT_TOKEN.trim() }, body: '{"files":[]}',
+  }).catch((e) => { throw new Error(`Não consegui falar com o painel em PAINEL_URL: ${e.message}`); });
+  // com o token certo o painel responde "Nenhum arquivo recebido" (nada é gravado)
+  if (r.status === 401 || r.status === 403 || r.status === 404) throw new Error(await explicarErro(r));
+  log('Painel ok: aceitou o token do robô.');
 }
 
 // ---------------------------------------------------------------- mapa (modo mapear)
@@ -495,6 +524,7 @@ async function main() {
   page.on('dialog', (d) => d.dismiss().catch(() => {})); // nunca confirma diálogos (exclusões etc.)
   const relatorioFinal = { quando: new Date().toISOString(), modo: MODO, meses: [], erros: [] };
   try {
+    if (MODO === 'sincronizar') await verificarPainel();
     await entrar(page);
     if (MODO === 'mapear') {
       const paginas = await catalogo(page);
