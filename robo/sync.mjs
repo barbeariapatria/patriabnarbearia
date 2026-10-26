@@ -20,7 +20,7 @@ const SAIDA = process.env.SAIDA || path.join(DIR, 'saida');
 const BASE = (process.env.CASHBARBER_URL || 'https://painel.cashbarber.com.br').replace(/\/+$/, '');
 const MODO = (process.env.MODO || 'sincronizar').toLowerCase();
 const CONF = JSON.parse(fs.readFileSync(path.join(DIR, 'relatorios.json'), 'utf8'));
-const PAGINAS = CONF.paginas; const OBRIGATORIOS = CONF.obrigatorios || ['comandas'];
+const PAGINAS = CONF.paginas;
 const TZ = 'America/Sao_Paulo';
 
 fs.mkdirSync(SAIDA, { recursive: true });
@@ -493,19 +493,22 @@ async function main() {
       }
       const tipos = Object.keys(porTipo);
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
-      const faltam = OBRIGATORIOS.filter((t) => !porTipo[t]);
-      if (faltam.length) {
-        relatorioFinal.erros.push(`${resumo.mes}: faltou o relatório de ${faltam.join(', ')}`);
-        resumo.envio = 'não enviado';
-        log(`  NADA FOI ENVIADO AO PAINEL: faltou ${faltam.join(', ')} (o robô não grava dados pela metade).`);
+      // envia o que conseguiu; o que faltou fica relatado (cada relatório só substitui a sua parte no painel)
+      const faltam = ['comandas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe'].filter((t) => !porTipo[t]);
+      if (faltam.length) log(`  Não veio desta vez: ${faltam.join(', ')} — essas partes do painel ficam como estavam.`);
+      resumo.faltaram = faltam;
+      if (!tipos.length) {
+        resumo.envio = 'nada para enviar';
+        relatorioFinal.erros.push(`${resumo.mes}: nenhum relatório foi baixado`);
+        log('  Nenhum relatório baixado: nada enviado ao painel.');
       } else if (MODO === 'testar') {
         resumo.envio = 'modo testar: nada enviado';
-        log('  Modo testar: tudo pronto, nada enviado.');
+        log(`  Modo testar: enviaria ${tipos.join(', ')}.`);
       } else {
         try {
           const r = await enviar(mes, Object.values(porTipo));
           resumo.envio = { reconhecidos: r.relatorios, ignorados: r.ignorados };
-          log(`  Painel importou: ${(r.relatorios || []).join(', ')}${r.ignorados?.length ? ` · ignorados: ${r.ignorados.join(', ')}` : ''}`);
+          log(`  Painel atualizado com: ${(r.relatorios || []).join(', ')}${r.ignorados?.length ? ` · ignorados: ${r.ignorados.join(', ')}` : ''}`);
         } catch (e) { resumo.envio = `erro: ${e.message}`; relatorioFinal.erros.push(`${resumo.mes} envio: ${e.message}`); log(`  ENVIO FALHOU — ${e.message}`); }
       }
       relatorioFinal.meses.push(resumo);

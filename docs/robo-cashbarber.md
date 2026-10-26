@@ -20,7 +20,7 @@ exporta os relatórios do mês em CSV e envia para o painel, que importa como em
 3. Preenche o período (campos de data, campo único "dd/mm/aaaa - dd/mm/aaaa" ou dois campos dd/mm/aaaa) e clica em
    Filtrar/Buscar, se existir.
 4. Exporta (botão Exportar/CSV/Excel, inclusive em menu). Excel vira CSV. Sem botão de exportar, lê a tabela da tela.
-5. Envia tudo para `POST /api/robo/importar`. Sem o relatório de **Comandas** (obrigatório), não envia nada.
+5. Envia para `POST /api/robo/importar` o que conseguiu baixar e relata no log o que faltou (cada relatório só substitui a sua parte no painel).
 
 Nunca clica em botões de excluir/cancelar e recusa qualquer diálogo de confirmação.
 

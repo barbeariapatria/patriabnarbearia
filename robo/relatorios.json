@@ -1,6 +1,5 @@
 {
-  "_leia": "Páginas do CashBarber que o robô abre e exporta. Em cada uma: escolhe o período (atalho 'Mês atual'/'Mês passado' ou datas), clica em Filtrar e baixa o CSV. O tipo de cada arquivo (comandas, agendamentos, serviços, assinantes, cancelamentos, equipe) é reconhecido pelas colunas, igual ao painel; arquivos não reconhecidos não são enviados. Sem um arquivo de comandas, nada é enviado.",
-  "obrigatorios": ["comandas"],
+  "_leia": "Páginas do CashBarber que o robô abre e exporta. Em cada uma: escolhe o período (atalho 'Mês atual'/'Mês passado' ou datas), clica em Filtrar e baixa o CSV. O tipo de cada arquivo (comandas, agendamentos, serviços, assinantes, cancelamentos, equipe) é reconhecido pelas colunas, igual ao painel; arquivos não reconhecidos não são enviados. O robô envia o que conseguir baixar e relata no log o que faltou.",
   "paginas": [
     { "url": "/relatorio/relatorio15", "nome": "Vendas",                     "periodo": true },
     { "url": "/relatorio/relatorio20", "nome": "Faturamento",                "periodo": true },
