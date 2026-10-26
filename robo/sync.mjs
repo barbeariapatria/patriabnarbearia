@@ -260,49 +260,89 @@ async function lerAviso(page) {
 }
 
 // Escolhe a filial nos filtros do relatório. Vazio, o CashBarber entende "todas as filiais" e o usuário do robô
-// recebe "Você não possui acesso a todas as filiais". Só mexe em campos de filial/unidade/empresa e só escolhe a
-// opção da Pátria (ou a única opção que não seja "todas"). Nunca escolhe profissional, cliente etc.
-const RE_FILIAL = /filia|unidade|empresa|loja|estabelecimento/i;
+// recebe "Você não possui acesso a todas as filiais". Acha o campo pelo rótulo "Filial"/"Unidade" e escolhe a opção
+// da Pátria (CASHBARBER_FILIAL muda o nome procurado) ou a única opção real. Nunca mexe em profissional, cliente etc.
 const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'p[aá]tria', 'i');
+const RE_OPCAO_GERAL = /^(todas?|todos|selecione|nenhum|--)/i;
 async function escolherFilial(page) {
-  const feitos = [];
-  // 1) <select> comum
-  const selects = await page.evaluate((reF) => {
-    const re = new RegExp(reF, 'i');
+  const campos = await page.evaluate(() => {
+    document.querySelectorAll('[data-robo-filial]').forEach((e) => e.removeAttribute('data-robo-filial'));
     const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-    return [...document.querySelectorAll('select')].filter(vis).map((sel, i) => {
-      sel.setAttribute('data-robo-sel', String(i));
-      const rotulo = `${sel.name} ${sel.id} ${sel.closest('.form-group, .col, div')?.querySelector('label')?.innerText || ''}`;
-      return { i, rotulo, filial: re.test(rotulo), opcoes: [...sel.options].map((o) => ({ v: o.value, t: o.text.trim() })), atual: sel.value };
-    });
-  }, RE_FILIAL.source);
-  for (const sel of selects.filter((x) => x.filial)) {
-    const reais = sel.opcoes.filter((o) => o.v && !/todas|todos|selecione/i.test(o.t));
-    const op = reais.find((o) => RE_PATRIA.test(o.t)) || (reais.length === 1 ? reais[0] : null);
-    if (op && sel.atual !== op.v) {
-      await page.locator(`[data-robo-sel="${sel.i}"]`).selectOption(op.v).catch(() => {});
+    return [...document.querySelectorAll('label')].filter((l) => vis(l) && /^\s*(filial|filiais|unidade|unidades)\s*\*?\s*$/i.test(l.innerText))
+      .map((l, i) => {
+        let box = l.closest('.form-group, .MuiFormControl-root, .col, [class*="col-"]') || l.parentElement;
+        if (box && !box.querySelector('select, input, [role="combobox"]')) box = box.parentElement;
+        if (!box) return null;
+        box.setAttribute('data-robo-filial', String(i));
+        const sel = box.querySelector('select');
+        return {
+          i, select: sel ? { multiplo: sel.multiple, atual: [...sel.selectedOptions].map((o) => o.text.trim()).join(', '), opcoes: [...sel.options].map((o) => ({ v: o.value, t: o.text.trim() })) } : null,
+          texto: (box.querySelector('input')?.value || box.querySelector('[class*="singleValue"], [class*="multiValue"], .select2-selection__rendered, .MuiChip-label')?.innerText || '').trim(),
+        };
+      }).filter(Boolean);
+  });
+  const feitos = [];
+  for (const c of campos) {
+    const box = page.locator(`[data-robo-filial="${c.i}"]`);
+    const escolher = (lista) => {
+      const reais = lista.filter((o) => o.t && !RE_OPCAO_GERAL.test(o.t));
+      return reais.find((o) => RE_PATRIA.test(o.t)) || (reais.length === 1 ? reais[0] : null);
+    };
+    if (c.select) {
+      // <select> comum, select2 ou bootstrap-select (o <select> fica escondido)
+      const op = escolher(c.select.opcoes.filter((o) => o.v !== ''));
+      if (!op) { log(`  (filial: ${c.select.opcoes.length} opções e nenhuma com "Pátria")`); continue; }
+      if (c.select.atual === op.t) { feitos.push(`filial "${op.t}" (já marcada)`); continue; }
+      await box.locator('select').first().evaluate((sel, v) => {
+        for (const o of sel.options) o.selected = sel.multiple ? (o.selected || o.value === v) : o.value === v;
+        sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true }));
+        if (window.jQuery) { try { const $s = window.jQuery(sel); $s.trigger('change'); if ($s.selectpicker) $s.selectpicker('refresh'); } catch {} }
+      }, op.v);
       feitos.push(`filial "${op.t}"`);
+      continue;
+    }
+    if (RE_PATRIA.test(c.texto)) { feitos.push(`filial "${c.texto}" (já marcada)`); continue; }
+    // lista com busca (MUI Autocomplete, react-select, select2 sem <select>): abre e escolhe pela lista que aparece
+    const abrir = box.locator('.MuiAutocomplete-popupIndicator, button[aria-label="Open"], [class*="indicatorContainer"], [class*="-control"], [role="combobox"], .select2-selection, input').first();
+    await abrir.click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+    const opcoes = page.locator('[role="listbox"] [role="option"], .select2-results__option, [class*="-option"], .MuiAutocomplete-option, .dropdown-menu.show li').filter({ visible: true });
+    const textos = (await opcoes.allInnerTexts().catch(() => [])).map((t, k) => ({ t: t.trim(), k }));
+    const op = escolher(textos);
+    if (op) {
+      await opcoes.nth(op.k).click().catch(() => {});
+      await page.waitForTimeout(500);
+      await page.keyboard.press('Escape').catch(() => {});
+      feitos.push(`filial "${op.t}"`);
+    } else {
+      await page.keyboard.press('Escape').catch(() => {});
+      log(`  (filial: lista com ${textos.length} opções e nenhuma com "Pátria")`);
     }
   }
-  // 2) campo com lista (MUI Autocomplete): botão "Open"
-  const autos = page.locator('.MuiAutocomplete-root:visible');
-  const n = await autos.count();
-  for (let i = 0; i < n; i++) {
-    const a = autos.nth(i);
-    const rotulo = await a.evaluate((e) => `${e.querySelector('label')?.innerText || ''} ${e.querySelector('input')?.placeholder || ''} ${e.closest('.form-group, .col, div')?.querySelector('label')?.innerText || ''}`).catch(() => '');
-    if (!RE_FILIAL.test(rotulo)) continue;
-    const valor = await a.locator('input').first().inputValue().catch(() => '');
-    if (valor && RE_PATRIA.test(valor)) continue;
-    await a.locator('.MuiAutocomplete-popupIndicator, button[aria-label="Open"]').first().click({ timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(800);
-    const opcoes = page.locator('[role="listbox"] [role="option"]:visible');
-    const textos = await opcoes.allInnerTexts().catch(() => []);
-    const reais = textos.map((t, k) => ({ t: t.trim(), k })).filter((o) => o.t && !/todas|todos|selecione/i.test(o.t));
-    const op = reais.find((o) => RE_PATRIA.test(o.t)) || (reais.length === 1 ? reais[0] : null);
-    if (op) { await opcoes.nth(op.k).click().catch(() => {}); feitos.push(`filial "${op.t}"`); }
-    else { await page.keyboard.press('Escape').catch(() => {}); log(`  (campo "${rotulo.trim()}" com ${reais.length} opções; nenhuma escolhida)`); }
+  if (!campos.length) return feitos;
+  return feitos.length ? feitos : ['filial não escolhida'];
+}
+
+// Depois de Filtrar: espera o resultado (até 25 s). O CSV pode vir como download direto, abrir em outra aba, ou
+// aparecer como botão quando a tabela carrega.
+const FILA = []; const NOVAS = [];
+async function aguardarResultado(page, f0, n0) {
+  for (let t = 0; t < 25; t++) {
+    if (FILA.length > f0) return salvarDownload(FILA[FILA.length - 1]);
+    if (NOVAS.length > n0) {
+      const nova = NOVAS[NOVAS.length - 1];
+      await nova.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(2000);
+      if (FILA.length > f0) return salvarDownload(FILA[FILA.length - 1]);
+      const ex = await exportar(nova).catch(() => null);
+      if (ex) return { ...ex, origem: `${ex.origem} (outra aba)` };
+      n0 = NOVAS.length;
+    }
+    if (await page.locator('.swal2-popup:visible').count()) return null;
+    if ((await clicaveis(page)).some((c) => RE_EXPORT.test(c.desc) && !RE_PERIGO.test(c.desc))) return null;
+    await page.waitForTimeout(1000);
   }
-  return feitos;
+  return null;
 }
 
 // botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
@@ -520,6 +560,8 @@ async function main() {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ acceptDownloads: true, locale: 'pt-BR', timezoneId: TZ, viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
+  page.on('download', (d) => FILA.push(d));
+  ctx.on('page', (p) => { p.on('download', (d) => FILA.push(d)); NOVAS.push(p); });
   page.setDefaultTimeout(20000);
   page.on('dialog', (d) => d.dismiss().catch(() => {})); // nunca confirma diálogos (exclusões etc.)
   const relatorioFinal = { quando: new Date().toISOString(), modo: MODO, meses: [], erros: [] };
@@ -548,10 +590,12 @@ async function main() {
             if (!como) throw new Error('não achei o filtro de datas');
             const filial = await escolherFilial(page);
             // no CashBarber o arquivo só sai depois de clicar em Filtrar
+            const f0 = FILA.length; const n0 = NOVAS.length;
             const filtrou = await aplicarFiltro(page);
+            ex = filtrou ? await aguardarResultado(page, f0, n0) : null;
             log(`  ${nome}: período por ${como}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ''}`);
             const aviso = await lerAviso(page);
-            if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex = aviso.download || null; }
+            if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex ||= aviso.download || null; }
           }
           ex ||= await exportar(page);
           if (!ex || !ex.csv?.trim()) {
@@ -569,6 +613,7 @@ async function main() {
           resumo.relatorios[nome] = `erro: ${e.message.slice(0, 300)}`;
           log(`  ${nome}: ERRO — ${e.message}`);
         }
+        for (const p of ctx.pages()) if (p !== page) await p.close().catch(() => {});
       }
       const tipos = Object.keys(porTipo);
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
