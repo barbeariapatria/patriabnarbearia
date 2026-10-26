@@ -200,38 +200,65 @@ function casar(config, paginas) {
 }
 
 // ---------------------------------------------------------------- filtro de datas
-async function definirPeriodo(page, per) {
-  const feito = await page.evaluate((per) => {
+// preenche os campos de data visíveis (na tela ou na janela do filtro); devolve como fez ou null
+async function preencherDatas(page, per) {
+  return page.evaluate((per) => {
     const vis = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
     const set = (el, v) => {
-      const proto = Object.getPrototypeOf(el); const d = Object.getOwnPropertyDescriptor(proto, 'value');
-      el.removeAttribute('readonly'); d.set.call(el, v);
+      const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+      el.removeAttribute('readonly'); el.focus(); d.set.call(el, v);
       for (const ev of ['input', 'change', 'blur']) el.dispatchEvent(new Event(ev, { bubbles: true }));
       if (window.jQuery) { try { window.jQuery(el).trigger('change'); } catch {} }
     };
-    const inputs = [...document.querySelectorAll('input')].filter((el) => vis(el) || el.type === 'date');
+    const inputs = [...document.querySelectorAll('input')].filter(vis);
     const datas = inputs.filter((el) => el.type === 'date');
     if (datas.length >= 2) { set(datas[0], per.deIso); set(datas[1], per.ateIso); return 'campos de data (AAAA-MM-DD)'; }
     const desc = (el) => `${el.name} ${el.id} ${el.placeholder} ${el.className} ${el.getAttribute('data-mask') || ''}`.toLowerCase();
-    const textos = inputs.filter((el) => ['text', 'search', ''].includes(el.type) && vis(el)
-      && /data|date|inicio|início|fim|final|periodo|período|dd\/mm|range|calend/.test(desc(el)));
+    const textos = inputs.filter((el) => ['text', 'search', 'tel', ''].includes(el.type)
+      && (/data|date|inicio|início|fim|final|periodo|período|dd\/mm|range|calend/.test(desc(el)) || /^\d{2}\/\d{2}\/\d{4}/.test(el.value)));
     const range = textos.find((el) => /range|periodo|período/.test(desc(el)) || / - /.test(el.value) || / - /.test(el.placeholder));
     if (range) { set(range, `${per.deBr} - ${per.ateBr}`); return 'campo de período (DD/MM/AAAA - DD/MM/AAAA)'; }
     if (textos.length >= 2) { set(textos[0], per.deBr); set(textos[1], per.ateBr); return 'campos de data (DD/MM/AAAA)'; }
     if (textos.length === 1) { set(textos[0], `${per.deBr} - ${per.ateBr}`); return 'campo único de data (intervalo)'; }
     return null;
   }, per);
-  await page.keyboard.press('Escape').catch(() => {});
-  if (feito) {
-    const filtrar = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible')
-      .filter({ hasText: /^\s*(filtrar|buscar|pesquisar|gerar|aplicar|consultar|atualizar|ok)\s*$/i }).first();
-    if (await filtrar.count()) {
-      await filtrar.click().catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+}
+
+// No CashBarber: clicar no filtro de data, escolher o período e, na janela que abre, baixar o CSV.
+async function definirPeriodo(page, per) {
+  let feito = await preencherDatas(page, per);
+  if (!feito) {
+    // abre o filtro de data (botão com "filtro", "data", "período" ou com uma data escrita)
+    const alvos = page.locator('button, a, [role="button"], .btn').filter({ visible: true });
+    const n = await alvos.count();
+    for (let i = 0; i < n && !feito; i++) {
+      const el = alvos.nth(i);
+      const info = await el.evaluate((e) => ({
+        t: `${e.innerText || ''} ${e.title || ''} ${e.getAttribute('aria-label') || ''}`.replace(/\s+/g, ' ').trim(),
+        menu: !!e.closest('nav, aside, .aside, #kt_aside, .sidebar, .menu, header'),
+      })).catch(() => null);
+      if (!info || info.menu || info.t.length > 60) continue;
+      if (!/filtr|\bdata\b|per[ií]odo|calend|\d{2}\/\d{2}\/\d{4}/i.test(info.t) || /excluir|apagar|remover|limpar/i.test(info.t)) continue;
+      await el.click({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(1500);
+      feito = await preencherDatas(page, per);
+      if (feito) feito += ` após clicar em "${info.t}"`;
     }
   }
+  await page.keyboard.press('Tab').catch(() => {}); // fecha o calendário sem fechar a janela do filtro
+  await page.waitForTimeout(500);
   return feito;
+}
+
+// botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
+async function aplicarFiltro(page) {
+  const filtrar = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible')
+    .filter({ hasText: /^\s*(filtrar|buscar|pesquisar|gerar|aplicar|consultar|atualizar|ok|confirmar)\s*$/i }).first();
+  if (!(await filtrar.count())) return false;
+  await filtrar.click().catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  return true;
 }
 
 // ---------------------------------------------------------------- exportação
@@ -243,7 +270,7 @@ async function tentarDownload(page, alvo, ms = 15000) {
   return espera;
 }
 
-async function exportar(page) {
+async function exportar(page, { tabela = true } = {}) {
   const sel = 'button, a, [role="button"], input[type="button"], input[type="submit"], .dt-button, li a';
   const candidatos = page.locator(sel).filter({ visible: true });
   const n = await candidatos.count();
@@ -271,6 +298,7 @@ async function exportar(page) {
     }
   }
   // último recurso: ler a maior tabela da tela
+  if (!tabela) return null;
   const csv = await tabelaDaTela(page);
   return csv ? { origem: 'tabela da tela', arquivo: 'tabela.csv', csv } : null;
 }
@@ -388,7 +416,9 @@ async function main() {
             if (!como) throw new Error('não achei o filtro de datas');
             log(`  ${c.chave}: período por ${como}`);
           }
-          const ex = await exportar(page);
+          // primeiro tenta baixar direto (CSV na janela do filtro); se não der, aplica o filtro e tenta de novo
+          let ex = c.periodo ? await exportar(page, { tabela: false }) : null;
+          if (!ex) { if (c.periodo) await aplicarFiltro(page); ex = await exportar(page); }
           if (!ex || !ex.csv?.trim()) {
             const { botoes } = await estrutura(page);
             throw new Error(`não consegui exportar · botões na tela: ${botoes.slice(0, 15).join(', ') || '(nenhum)'}`);
