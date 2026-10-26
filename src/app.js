@@ -74,7 +74,7 @@ const wrap = (fn) => async (req, res) => {
 // ---------------------------------------------------------------- Autenticação
 app.post('/api/auth/login', auth.loginRateLimit, wrap(async (req, res) => {
   const { username, password } = req.body || {};
-  const user = username && (await db.get('SELECT * FROM users WHERE username = ?', String(username).trim()));
+  const user = username && (await db.get('SELECT * FROM users WHERE lower(username) = lower(?)', String(username).trim()));
   if (!user || !auth.verifyPassword(String(password || ''), user.password_hash)) {
     res.status(401).json({ error: 'Você não tem acesso' });
     return;
@@ -97,7 +97,12 @@ app.post('/api/auth/password', auth.requireAuth, wrap(async (req) => {
 
 // ---------------------------------------------------------------- Dashboard (leitura)
 app.get('/api/dashboard', auth.requireAuth, wrap((req) => { const { y, m } = ym(req.query); return metrics.dashboard(y, m); }));
-app.get('/api/profissionais/stats', auth.requireAuth, wrap((req) => { const { y, m } = ym(req.query); return metrics.proStats(y, m); }));
+app.get('/api/periodo', auth.requireAuth, wrap((req) => metrics.rangeReport(req.query.de, req.query.ate)));
+app.get('/api/profissionais/stats', auth.requireAuth, wrap((req) => {
+  if (req.query.de && req.query.ate) return metrics.proStatsRange(req.query.de, req.query.ate);
+  const { y, m } = ym(req.query);
+  return metrics.proStats(y, m);
+}));
 app.get('/api/profissionais/ano', auth.requireAuth, wrap((req) => metrics.proYear(ym(req.query).y)));
 app.get('/api/profissionais', auth.requireAuth, wrap(() => db.all('SELECT * FROM professionals ORDER BY active DESC, name')));
 // Últimos eventos do webhook, resumidos para a página inicial (qualquer usuário logado)
@@ -143,8 +148,8 @@ app.put('/api/admin/diario/:date', auth.requireAdmin, wrap(async (req) => {
 app.post('/api/admin/profissionais', auth.requireAdmin, wrap(async (req) => {
   const name = String(req.body?.name || '').trim();
   if (!name) throw new Error('Informe o nome');
-  const r = await db.run('INSERT INTO professionals(name, external_id) VALUES(?, ?)', name, req.body.external_id || null);
-  return { id: r.lastInsertRowid };
+  await db.run('INSERT INTO professionals(name, external_id) VALUES(?, ?)', name, req.body.external_id || null);
+  return { ok: true };
 }));
 app.put('/api/admin/profissionais/:id', auth.requireAdmin, wrap(async (req) => {
   const b = req.body || {};
@@ -241,7 +246,8 @@ const publicBase = (req) => process.env.PUBLIC_URL || process.env.RENDER_EXTERNA
 app.get('/api/admin/webhook', auth.requireAdmin, wrap(async (req) => {
   const s = await getAllSettings();
   const base = publicBase(req);
-  const stats = await db.all(`SELECT status, COUNT(*) AS n FROM webhook_events WHERE created_at >= datetime('now', '-30 days') GROUP BY status`);
+  const desde = new Date(Date.now() - 30 * 86400e3).toISOString().replace('T', ' ').slice(0, 19);
+  const stats = await db.all('SELECT status, COUNT(*) AS n FROM webhook_events WHERE created_at >= ? GROUP BY status', desde);
   return {
     token: s.webhook_token,
     url: `${base}/api/webhooks/cashbarber`,

@@ -152,7 +152,7 @@ async function proStats(y, m) {
 async function proYear(y) {
   const rows = await db.all(`
     SELECT p.name, pm.* FROM professional_monthly pm JOIN professionals p ON p.id = pm.professional_id
-    WHERE pm.year = ? ORDER BY pm.month`, y);
+    WHERE pm.year = ? ORDER BY pm.month, p.id`, y);
   const months = MONTHS.map((nome, i) => ({ mes: i + 1, nome, faturamento_total: 0, clientes: 0, assinatura: 0, profissionais: {} }));
   for (const r of rows) {
     const mo = months[r.month - 1];
@@ -168,4 +168,123 @@ async function proYear(y) {
   return { ano: y, meses: months };
 }
 
-module.exports = { dashboard, proStats, proYear, getMonthDays, todayIso, todayParts, FIELDS, MONTHS, WEEKDAYS, iso, round2, daysInMonth };
+
+// ---------------------------------------------------------------- Relatórios por período (de/até)
+const MAX_RANGE_DAYS = 731;
+
+function parseRange(de, ate) {
+  const ok = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+  if (!ok(de) || !ok(ate)) throw new Error('Período inválido: informe as datas no formato AAAA-MM-DD.');
+  if (de > ate) [de, ate] = [ate, de];
+  const span = (Date.parse(ate) - Date.parse(de)) / 86400e3 + 1;
+  if (span > MAX_RANGE_DAYS) throw new Error('O período pode ter no máximo 2 anos.');
+  return { de, ate, dias: span };
+}
+
+function eachDay(de, ate, fn) {
+  for (let t = Date.parse(`${de}T00:00:00Z`); t <= Date.parse(`${ate}T00:00:00Z`); t += 86400e3) {
+    const d = new Date(t);
+    fn(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+  }
+}
+
+async function sumRange(de, ate) {
+  const r = await db.get(`SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia), 0) AS total
+    FROM daily_revenue WHERE date >= ? AND date <= ?`, de, ate);
+  return round2(Number(r?.total || 0));
+}
+
+async function rangeReport(deIn, ateIn) {
+  const { de, ate, dias: span } = parseRange(deIn, ateIn);
+  const settings = await getAllSettings();
+  const rows = await db.all('SELECT * FROM daily_revenue WHERE date >= ? AND date <= ? ORDER BY date', de, ate);
+  const byDate = Object.fromEntries(rows.map((r) => [r.date, r]));
+  const hoje = todayIso();
+  const days = [];
+  eachDay(de, ate, (y, m, d) => {
+    const date = iso(y, m, d);
+    const r = byDate[date] || {};
+    const day = { date, dia: d, mes: m, ano: y, dia_semana: WEEKDAYS[weekday(y, m, d)], util: isWorkingDay(y, m, d, settings), status: r.status || 'PREVISTO', futuro: date > hoje };
+    for (const f of FIELDS) day[f] = r[f] || 0;
+    day.total = round2(FIELDS.reduce((acc, f) => acc + day[f], 0));
+    days.push(day);
+  });
+  const totals = Object.fromEntries(FIELDS.map((f) => [f, round2(days.reduce((a, d) => a + d[f], 0))]));
+  totals.total = round2(days.reduce((a, d) => a + d.total, 0));
+
+  const withValue = days.filter((d) => d.total > 0);
+  const maior = withValue.reduce((a, d) => (!a || d.total > a.total ? d : a), null);
+  const menor = withValue.reduce((a, d) => (!a || d.total < a.total ? d : a), null);
+
+  // Subtotais por mês (para períodos longos e para a tabela)
+  const porMes = [];
+  for (const d of days) {
+    const key = `${d.ano}-${pad(d.mes)}`;
+    let mo = porMes[porMes.length - 1];
+    if (!mo || mo.chave !== key) { mo = { chave: key, ano: d.ano, mes: d.mes, nome: MONTHS[d.mes - 1], dias: 0, total: 0 }; for (const f of FIELDS) mo[f] = 0; porMes.push(mo); }
+    mo.dias++;
+    for (const f of FIELDS) mo[f] = round2(mo[f] + d[f]);
+    mo.total = round2(mo.total + d.total);
+  }
+
+  // Comparação com o período anterior de mesmo tamanho
+  const prevAte = new Date(Date.parse(`${de}T00:00:00Z`) - 86400e3).toISOString().slice(0, 10);
+  const prevDe = new Date(Date.parse(`${de}T00:00:00Z`) - span * 86400e3).toISOString().slice(0, 10);
+  const prevTotal = await sumRange(prevDe, prevAte);
+
+  return {
+    de, ate, dias_no_periodo: span, unidade: settings.unidade,
+    totais: totals,
+    dias_com_faturamento: withValue.length,
+    dias_uteis: days.filter((d) => d.util).length,
+    media_diaria: withValue.length ? round2(totals.total / withValue.length) : 0,
+    maior_dia: maior ? { date: maior.date, valor: maior.total } : null,
+    menor_dia: menor ? { date: menor.date, valor: menor.total } : null,
+    periodo_anterior: { de: prevDe, ate: prevAte, total: prevTotal, variacao: prevTotal ? round2(((totals.total - prevTotal) / prevTotal) * 100) : null },
+    por_mes: porMes,
+    dias: days,
+  };
+}
+
+// Indicadores dos profissionais somados nos meses que o período cobre (os dados são mensais)
+async function proStatsRange(deIn, ateIn) {
+  const { de, ate } = parseRange(deIn, ateIn);
+  const [y1, m1] = de.split('-').map(Number);
+  const [y2, m2] = ate.split('-').map(Number);
+  const rows = await db.all(`
+    SELECT p.id, p.name, p.active, pm.* FROM professional_monthly pm JOIN professionals p ON p.id = pm.professional_id
+    WHERE pm.year * 100 + pm.month BETWEEN ? AND ? ORDER BY p.name, pm.year, pm.month`, y1 * 100 + m1, y2 * 100 + m2);
+  const meses = [];
+  for (let y = y1, m = m1; y * 100 + m <= y2 * 100 + m2; m === 12 ? (y++, m = 1) : m++) meses.push({ ano: y, mes: m, nome: MONTHS[m - 1] });
+  const parcial = !de.endsWith('-01') || ate !== iso(y2, m2, daysInMonth(y2, m2));
+
+  const byPro = new Map();
+  for (const r of rows) {
+    const p = byPro.get(r.id) || {
+      professional_id: r.id, name: r.name, active: !!r.active, has_data: true, meses: 0,
+      faturamento_total: 0, faturamento_assinatura: 0, comissao: 0, clientes_atendidos: 0, geracao_demanda: 0,
+      servicos_realizados: 0, venda_produtos: 0, qtd_produtos: 0, extras: {}, _pagos: 0,
+    };
+    p.meses++;
+    for (const k of ['faturamento_total', 'faturamento_assinatura', 'comissao', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos']) p[k] = round2(p[k] + (r[k] || 0));
+    // atendimentos pagos no mês = faturamento ÷ ticket; sem ticket, usa os clientes
+    p._pagos += r.ticket_medio ? r.faturamento_total / r.ticket_medio : (r.clientes_atendidos || 0);
+    for (const [k, v] of Object.entries(extrasOf(r))) p.extras[k] = (p.extras[k] || 0) + Number(v || 0);
+    byPro.set(r.id, p);
+  }
+  const list = [...byPro.values()].map(({ _pagos, ...p }) => ({ ...p, ticket_medio: _pagos ? round2(p.faturamento_total / _pagos) : 0 }));
+  const numeric = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos'];
+  const total = {}; const media = {};
+  for (const k of numeric) {
+    total[k] = round2(list.reduce((a, r) => a + r[k], 0));
+    const nonZero = list.filter((r) => r[k]);
+    media[k] = nonZero.length ? round2(total[k] / nonZero.length) : 0;
+  }
+  const extrasTotal = {};
+  for (const r of list) for (const [k, v] of Object.entries(r.extras)) extrasTotal[k] = (extrasTotal[k] || 0) + v;
+  total.extras = extrasTotal;
+  const label = meses.length === 1 ? `${meses[0].nome} ${meses[0].ano}` : `${meses[0].nome.slice(0, 3)}/${meses[0].ano} a ${meses[meses.length - 1].nome.slice(0, 3)}/${meses[meses.length - 1].ano}`;
+  return { de, ate, meses, parcial, mes_nome: label, ano: y2, mes: m2, profissionais: list, total, media };
+}
+
+module.exports = { dashboard, proStats, proYear, rangeReport, proStatsRange, getMonthDays, todayIso, todayParts, FIELDS, MONTHS, WEEKDAYS, iso, round2, daysInMonth };

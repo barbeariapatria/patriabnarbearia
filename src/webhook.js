@@ -69,16 +69,16 @@ const EVENT_KIND = (e) => {
 async function findOrCreatePro(q, name, externalId) {
   const clean = String(name).trim();
   let pro = externalId ? await q.get('SELECT * FROM professionals WHERE external_id = ?', String(externalId)) : null;
-  if (!pro) pro = await q.get('SELECT * FROM professionals WHERE name = ?', clean);
+  if (!pro) pro = await q.get('SELECT * FROM professionals WHERE lower(name) = lower(?)', clean);
   if (!pro) {
-    await q.run('INSERT OR IGNORE INTO professionals(name, external_id) VALUES(?, ?)', clean, externalId ? String(externalId) : null);
-    pro = await q.get('SELECT * FROM professionals WHERE name = ?', clean);
+    await q.run('INSERT INTO professionals(name, external_id) VALUES(?, ?) ON CONFLICT DO NOTHING', clean, externalId ? String(externalId) : null);
+    pro = await q.get('SELECT * FROM professionals WHERE lower(name) = lower(?)', clean);
   }
   return pro;
 }
 
 async function ensureMonthly(q, proId, y, m) {
-  await q.run('INSERT OR IGNORE INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?)', proId, y, m);
+  await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', proId, y, m);
   return q.get('SELECT * FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?', proId, y, m);
 }
 
@@ -135,9 +135,9 @@ async function applySale(q, plan, sign) {
   const v = plan.values;
   await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
     VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
-    ON CONFLICT(date) DO UPDATE SET servicos = servicos + excluded.servicos, produtos = produtos + excluded.produtos,
-      novas_assinaturas = novas_assinaturas + excluded.novas_assinaturas, sva = sva + excluded.sva,
-      recorrencia = recorrencia + excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
+    ON CONFLICT(date) DO UPDATE SET servicos = daily_revenue.servicos + excluded.servicos, produtos = daily_revenue.produtos + excluded.produtos,
+      novas_assinaturas = daily_revenue.novas_assinaturas + excluded.novas_assinaturas, sva = daily_revenue.sva + excluded.sva,
+      recorrencia = daily_revenue.recorrencia + excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
   plan.date, sign * v.servicos, sign * v.produtos, sign * v.novas_assinaturas, sign * v.sva, sign * v.recorrencia);
 
   if (!plan.profissional) return;

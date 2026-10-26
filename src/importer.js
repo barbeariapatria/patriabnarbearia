@@ -205,17 +205,24 @@ async function apply(plan) {
       await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
         VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)`, d.date, d.servicos, d.produtos, d.novas_assinaturas, d.sva, d.recorrencia);
     }
+    // o relatório é a fonte da verdade do mês: quem não aparece nele sai daquele mês
+    const keep = [];
     for (const p of plan.profissionais) {
       let id = p.id;
       if (!id) {
-        await q.run('INSERT OR IGNORE INTO professionals(name, external_id) VALUES(?, ?)', p.nome, p.nome_cashbarber);
-        id = (await q.get('SELECT id FROM professionals WHERE name = ?', p.nome)).id;
+        await q.run('INSERT INTO professionals(name, external_id) VALUES(?, ?) ON CONFLICT DO NOTHING', p.nome, p.nome_cashbarber);
+        id = (await q.get('SELECT id FROM professionals WHERE lower(name) = lower(?)', p.nome)).id;
       } else {
         await q.run('UPDATE professionals SET external_id = ?, active = 1 WHERE id = ?', p.nome_cashbarber, id);
       }
-      await q.run('INSERT OR IGNORE INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?)', id, y, m);
+      await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', id, y, m);
       await q.run(`UPDATE professional_monthly SET faturamento_total = ?, clientes_atendidos = ?, geracao_demanda = ?, ticket_medio = ?, updated_at = CURRENT_TIMESTAMP
         WHERE professional_id = ? AND year = ? AND month = ?`, p.faturamento_total, p.clientes_atendidos, p.geracao_demanda, p.ticket_medio, id, y, m);
+      keep.push(id);
+    }
+    const others = await q.all('SELECT professional_id FROM professional_monthly WHERE year = ? AND month = ?', y, m);
+    for (const o of others) {
+      if (!keep.includes(o.professional_id)) await q.run('DELETE FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?', o.professional_id, y, m);
     }
   });
   return { ok: true, ano: y, mes: m, dias: plan.diario.length, profissionais: plan.profissionais.length };

@@ -27,6 +27,14 @@ de Janeiro e Março das planilhas.
 | Profissionais | Ranking, faturamento × assinatura, ticket médio vs média, evolução mensal, comparativo completo e mapa de SVA |
 | Admin | Lançamentos mensais, equipe, metas/dias não úteis/feriados/catálogo de SVA, usuários (admin/visualizador), integração |
 
+## Filtro de período
+
+No topo de **Início, Painel de metas, Faturamento diário e Profissionais** há o seletor de período: mês a mês (setas),
+atalhos (este mês, mês passado, últimos 7/30/90 dias, este ano, ano passado) ou datas personalizadas (até 2 anos).
+Em um intervalo, o Início e o Painel de metas mostram o resumo do período (total, média por dia, maior e menor dia,
+composição, mês a mês, ranking, comparação com o período anterior). Metas e quinzenas continuam mensais. Os números
+dos profissionais são mensais, então um intervalo soma os meses inteiros que ele toca.
+
 ## Importar do CashBarber
 
 Em **Admin → Importar CashBarber**, envie os CSVs exportados do mês (pode arrastar todos de uma vez):
@@ -100,28 +108,31 @@ public/              painel (HTML/CSS/JS + Chart.js)
 web/                 página inicial em React (ver acima)
 ```
 
-## Colocar no ar na Vercel
+## Colocar no ar na Vercel (com Supabase)
 
-A Vercel não guarda arquivos entre execuções, então o banco fica no **Turso** (SQLite na nuvem, plano gratuito).
+A Vercel não guarda arquivos entre execuções, então o banco fica no **Supabase** (Postgres).
 
-1. **Banco:** na Vercel, abra o projeto → **Storage** → **Create Database** → **Turso** (ou crie em turso.tech).
-   Isso cria as variáveis `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN`. Se criar fora da Vercel, cadastre as duas à mão.
-2. **Projeto:** **Add New → Project** → importe o repositório `barbeariapatria/patriabnarbearia`.
-   O `vercel.json` já configura build, pasta pública e a API. Não mude nada nas opções de build.
-3. **Variáveis de ambiente** (Settings → Environment Variables):
+1. **Banco:** conecte o Supabase ao projeto na Vercel (Storage / Integrations → Supabase). A integração cria a variável
+   `POSTGRES_URL` (conexão "pooler", a recomendada para a Vercel). Se ela não existir, copie a string em
+   Supabase → **Connect** → *Transaction pooler* e cadastre como `POSTGRES_URL`.
+2. **Variáveis de ambiente** (Settings → Environment Variables):
 
    | Nome | Valor |
    |---|---|
    | `ADMIN_USER` | `barbeariapatria@gmail.com` |
    | `ADMIN_PASSWORD` | a senha do painel |
-   | `SESSION_SECRET` | um texto longo e aleatório (ex.: gere em 1password.com/password-generator) |
-   | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | criadas no passo 1 |
+   | `SESSION_SECRET` | opcional: um texto longo e aleatório |
+   | `POSTGRES_URL` | criada pela integração do Supabase |
 
-4. **Deploy.** O primeiro acesso cria as tabelas, o login e importa os dados das planilhas.
+3. **Deploy** (Deployments → Redeploy). O primeiro acesso cria as tabelas `patria_*` no Supabase (com RLS ligado,
+   então a API pública do Supabase não as enxerga), o login e os dados das planilhas.
+4. Confira em `https://SEU-SITE.vercel.app/api/health`: deve mostrar `"ok": true` e `"tipo": "supabase_postgres"`.
 5. Entre no painel → **Importar CashBarber** e envie os CSVs do mês.
 
 **Acesso:** só entra quem usar `ADMIN_USER` + `ADMIN_PASSWORD`; qualquer outro login vê "Você não tem acesso".
-Para trocar a senha, mude `ADMIN_PASSWORD` na Vercel e faça um novo deploy (Deployments → Redeploy).
+Para trocar a senha, mude `ADMIN_PASSWORD` na Vercel e faça um novo deploy.
+
+O código também aceita **Turso** (`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`) no lugar do Supabase.
 
 ## Outras hospedagens
 

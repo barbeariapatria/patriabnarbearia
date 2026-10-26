@@ -21,21 +21,21 @@ const PRO_DATA = [
 const EXTRA_PROS = ['Luryan'];
 
 async function upsertPro(q, name) {
-  await q.run('INSERT OR IGNORE INTO professionals(name) VALUES(?)', name);
-  return (await q.get('SELECT id FROM professionals WHERE name = ?', name)).id;
+  await q.run('INSERT INTO professionals(name) VALUES(?) ON CONFLICT DO NOTHING', name);
+  return (await q.get('SELECT id FROM professionals WHERE lower(name) = lower(?)', name)).id;
 }
 
 async function seedInitial() {
   if (await getSetting('seeded')) return;
   await tx(async (q) => {
     // marca primeiro: se outra instância já importou, a transação dela ganha e esta não duplica nada
-    const mark = await q.run("INSERT OR IGNORE INTO settings(key, value) VALUES('seeded', 'true')");
+    const mark = await q.run("INSERT INTO settings(key, value) VALUES('seeded', 'true') ON CONFLICT DO NOTHING");
     if (!mark.changes) return;
     for (const r of PRO_DATA) {
       const id = await upsertPro(q, r.name);
-      await q.run(`INSERT OR REPLACE INTO professional_monthly(professional_id, year, month, faturamento_total, faturamento_assinatura, comissao,
+      await q.run(`INSERT INTO professional_monthly(professional_id, year, month, faturamento_total, faturamento_assinatura, comissao,
         ticket_medio, clientes_atendidos, geracao_demanda, servicos_realizados, venda_produtos, qtd_produtos, extras)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
       id, YEAR, r.month, r.faturamento_total, r.faturamento_assinatura, r.comissao, r.ticket_medio, r.clientes_atendidos,
       r.geracao_demanda, r.servicos_realizados, r.venda_produtos, r.qtd_produtos, JSON.stringify(r.extras));
     }
@@ -56,12 +56,14 @@ async function seedDemo(y, m) {
       const wd = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
       const date = iso(y, m, d);
       if (closed.includes(wd) || d > lastDay) {
-        await q.run("INSERT OR REPLACE INTO daily_revenue(date, status) VALUES(?, 'PREVISTO')", date);
+        await q.run(`INSERT INTO daily_revenue(date, status) VALUES(?, 'PREVISTO')
+          ON CONFLICT(date) DO UPDATE SET servicos = 0, produtos = 0, novas_assinaturas = 0, sva = 0, recorrencia = 0, status = 'PREVISTO'`, date);
         continue;
       }
       const boost = wd === 5 || wd === 6 ? 1.45 : 1;
-      await q.run(`INSERT OR REPLACE INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status)
-        VALUES(?, ?, ?, ?, ?, ?, 'DEMO')`, date,
+      await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status)
+        VALUES(?, ?, ?, ?, ?, ?, 'DEMO') ON CONFLICT(date) DO UPDATE SET servicos = excluded.servicos, produtos = excluded.produtos,
+        novas_assinaturas = excluded.novas_assinaturas, sva = excluded.sva, recorrencia = excluded.recorrencia, status = 'DEMO'`, date,
       round2((520 + rand() * 380) * boost), round2((60 + rand() * 160) * boost),
       round2(rand() > 0.55 ? 99.9 * Math.ceil(rand() * 3) : 0), round2((900 + rand() * 900) * boost), round2(80 + rand() * 260));
     }

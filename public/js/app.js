@@ -92,7 +92,52 @@
   try {
     const saved = JSON.parse(sessionStorage.getItem('ym') || 'null');
     if (saved?.y && saved?.m) { state.y = saved.y; state.m = saved.m; }
+    const per = JSON.parse(sessionStorage.getItem('periodo') || 'null');
+    if (per?.mode === 'intervalo' && per.de && per.ate) state.period = per;
   } catch {}
+  state.period ??= { mode: 'mes' };
+
+  // ---------------------------------------------------------- Período (mês ou intervalo de datas)
+  const isoDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const addDays = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return isoDate(new Date(y, m - 1, d + n)); };
+  const daysBetween = (a, b) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400e3) + 1;
+  const isRange = () => state.period.mode === 'intervalo';
+  const fmtFull = (iso) => iso.split('-').reverse().join('/');
+  const periodQS = () => (isRange() ? `de=${state.period.de}&ate=${state.period.ate}` : `ano=${state.y}&mes=${state.m}`);
+  const periodYear = () => (isRange() ? Number(state.period.ate.slice(0, 4)) : state.y);
+  const PRESETS = [
+    { id: 'mes_atual', label: 'Este mês' },
+    { id: 'mes_passado', label: 'Mês passado' },
+    { id: 'ultimos_7', label: 'Últimos 7 dias' },
+    { id: 'ultimos_30', label: 'Últimos 30 dias' },
+    { id: 'ultimos_90', label: 'Últimos 90 dias' },
+    { id: 'ano_atual', label: 'Este ano' },
+    { id: 'ano_passado', label: 'Ano passado' },
+  ];
+  function presetPeriod(id) {
+    const t = new Date(); const hoje = isoDate(t);
+    if (id === 'mes_atual') return { mode: 'mes', y: t.getFullYear(), m: t.getMonth() + 1 };
+    if (id === 'mes_passado') { const p = new Date(t.getFullYear(), t.getMonth() - 1, 1); return { mode: 'mes', y: p.getFullYear(), m: p.getMonth() + 1 }; }
+    if (id.startsWith('ultimos_')) { const n = Number(id.split('_')[1]); return { mode: 'intervalo', de: addDays(hoje, -(n - 1)), ate: hoje }; }
+    if (id === 'ano_atual') return { mode: 'intervalo', de: `${t.getFullYear()}-01-01`, ate: hoje };
+    if (id === 'ano_passado') return { mode: 'intervalo', de: `${t.getFullYear() - 1}-01-01`, ate: `${t.getFullYear() - 1}-12-31` };
+    return null;
+  }
+  function setPeriod(p, preset = null) {
+    if (p.mode === 'mes') {
+      state.period = { mode: 'mes' }; state.y = p.y; state.m = p.m;
+      try { sessionStorage.setItem('ym', JSON.stringify({ y: p.y, m: p.m })); } catch {}
+    } else {
+      let { de, ate } = p; if (de > ate) [de, ate] = [ate, de];
+      state.period = { mode: 'intervalo', de, ate, preset };
+    }
+    try { sessionStorage.setItem('periodo', JSON.stringify(state.period)); } catch {}
+    route();
+  }
+  const periodLabel = () => (isRange()
+    ? (PRESETS.find((p) => p.id === state.period.preset)?.label || 'Personalizado')
+    : 'Mês');
+  const rangeTitle = () => `${fmtFull(state.period.de)} a ${fmtFull(state.period.ate)}`;
 
   async function api(path, opts = {}) {
     const res = await fetch(path, {
@@ -230,10 +275,10 @@
   // ============================================================ Shell
   const NAV = [
     { group: 'Painel' },
-    { path: 'inicio', label: 'Início', icon: 'home', title: 'Início', month: true },
-    { path: 'visao-geral', label: 'Painel de metas', icon: 'trend', title: 'Painel de metas', month: true },
-    { path: 'faturamento', label: 'Faturamento diário', icon: 'calendar', title: 'Faturamento por dia', month: true },
-    { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true },
+    { path: 'inicio', label: 'Início', icon: 'home', title: 'Início', month: true, period: true },
+    { path: 'visao-geral', label: 'Painel de metas', icon: 'trend', title: 'Painel de metas', month: true, period: true },
+    { path: 'faturamento', label: 'Faturamento diário', icon: 'calendar', title: 'Faturamento por dia', month: true, period: true },
+    { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true, period: true },
     { group: 'Administração', admin: true },
     { path: 'admin/importar', label: 'Importar CashBarber', icon: 'download', title: 'Importar relatórios do CashBarber', admin: true },
     { path: 'admin/lancamentos', label: 'Lançamentos', icon: 'edit', title: 'Lançamentos por profissional', month: true, admin: true },
@@ -275,6 +320,10 @@
             <div class="label" id="monthLabel"></div>
             <button class="btn btn-ghost btn-icon" id="nextM" aria-label="Próximo mês">${icon('right')}</button>
           </div>
+          <div class="period-wrap" id="periodWrap">
+            <button class="btn" id="periodBtn" aria-haspopup="true" aria-expanded="false">${icon('calendar')}<span id="periodBtnLabel">Mês</span></button>
+            <div class="period-pop hidden" id="periodPop" role="dialog" aria-label="Escolher período"></div>
+          </div>
           <button class="btn btn-icon" id="themeBtn" title="Alternar tema">${icon(state.theme === 'light' ? 'moon' : 'sun')}</button>
         </header>
         <div class="content" id="view"></div>
@@ -292,16 +341,58 @@
     };
     $('#menuBtn').onclick = () => $('#sidebar').classList.toggle('open');
     const shift = (d) => {
+      const nav = NAV.find((n) => n.path === (location.hash.replace(/^#\/?/, '') || 'inicio'));
+      if (isRange() && nav?.period) {
+        const span = daysBetween(state.period.de, state.period.ate);
+        setPeriod({ mode: 'intervalo', de: addDays(state.period.de, d * span), ate: addDays(state.period.ate, d * span) }, state.period.preset ? 'deslocado' : null);
+        return;
+      }
       let m = state.m + d; let y = state.y;
       if (m < 1) { m = 12; y--; } if (m > 12) { m = 1; y++; }
       state.m = m; state.y = y;
       try { sessionStorage.setItem('ym', JSON.stringify({ y, m })); } catch {}
       route();
     };
+    $('#periodBtn').onclick = (e) => { e.stopPropagation(); togglePeriodPop(); };
+    document.addEventListener('click', (e) => { if (!e.target.closest('#periodWrap')) closePeriodPop(); });
     $('#prevM').onclick = () => shift(-1);
     $('#nextM').onclick = () => shift(1);
     api('/api/config/publica').then((c) => { $('#unitName').textContent = unitLabel(c.unidade); }).catch(() => {});
     route();
+  }
+
+  function closePeriodPop() {
+    const pop = $('#periodPop'); if (!pop || pop.classList.contains('hidden')) return;
+    pop.classList.add('hidden'); $('#periodBtn').setAttribute('aria-expanded', 'false');
+  }
+  function togglePeriodPop() {
+    const pop = $('#periodPop');
+    if (!pop.classList.contains('hidden')) return closePeriodPop();
+    const cur = isRange() ? state.period : { de: isoDate(new Date(state.y, state.m - 1, 1)), ate: isoDate(new Date(state.y, state.m, 0)) };
+    const active = isRange() ? state.period.preset : (state.y === new Date().getFullYear() && state.m === new Date().getMonth() + 1 ? 'mes_atual' : 'mes');
+    pop.innerHTML = `
+      <div class="eyebrow" style="margin-bottom:8px">Atalhos</div>
+      <div class="period-presets">
+        <button class="chip ${active === 'mes' ? 'on' : ''}" data-mes>Mês (setas)</button>
+        ${PRESETS.map((p) => `<button class="chip ${active === p.id ? 'on' : ''}" data-preset="${p.id}">${p.label}</button>`).join('')}
+      </div>
+      <div class="eyebrow" style="margin:16px 0 8px">Personalizado</div>
+      <form id="periodForm" class="period-custom">
+        <label class="field" style="margin:0"><span>De</span><input class="input input-sm" type="date" id="perDe" value="${cur.de}" required></label>
+        <label class="field" style="margin:0"><span>Até</span><input class="input input-sm" type="date" id="perAte" value="${cur.ate}" required></label>
+        <button class="btn btn-primary btn-sm" type="submit">Aplicar</button>
+      </form>
+      <p class="muted" style="font-size:11.5px;margin:12px 0 0">Metas e quinzenas são mensais: no modo intervalo o painel mostra o resumo do período.</p>`;
+    pop.classList.remove('hidden'); $('#periodBtn').setAttribute('aria-expanded', 'true');
+    $('[data-mes]', pop).onclick = () => setPeriod({ mode: 'mes', y: state.y, m: state.m });
+    $$('[data-preset]', pop).forEach((b) => { b.onclick = () => setPeriod(presetPeriod(b.dataset.preset), b.dataset.preset); });
+    $('#periodForm', pop).onsubmit = (e) => {
+      e.preventDefault();
+      const de = $('#perDe', pop).value; const ate = $('#perAte', pop).value;
+      if (!de || !ate) return;
+      if (daysBetween(de < ate ? de : ate, de < ate ? ate : de) > 731) { toast('O período pode ter no máximo 2 anos', 'err'); return; }
+      setPeriod({ mode: 'intervalo', de, ate });
+    };
   }
 
   async function loadPros() {
@@ -318,7 +409,14 @@
     $('#pageTitle').textContent = nav.title;
     $('#pageSub').textContent = '';
     $('#monthPicker').classList.toggle('hidden', !nav.month);
-    $('#monthLabel').textContent = `${MONTHS[state.m - 1]} ${state.y}`;
+    $('#periodWrap').classList.toggle('hidden', !nav.period);
+    closePeriodPop();
+    const ranged = nav.period && isRange();
+    $('#monthLabel').textContent = ranged ? rangeTitle() : `${MONTHS[state.m - 1]} ${state.y}`;
+    $('#monthPicker').classList.toggle('range', ranged);
+    $('#periodBtnLabel').textContent = nav.period ? periodLabel() : 'Mês';
+    $('#prevM').setAttribute('aria-label', ranged ? 'Período anterior' : 'Mês anterior');
+    $('#nextM').setAttribute('aria-label', ranged ? 'Próximo período' : 'Próximo mês');
     document.title = `${nav.title} — Pátria Barbearia`;
     destroyCharts();
     state.unmountBento?.(); state.unmountBento = null;
@@ -376,6 +474,7 @@
 
   // ============================================================ Visão geral
   async function viewOverview(view) {
+    if (isRange()) return viewRangeDashboard(view);
     const [d, ps] = await Promise.all([
       api(`/api/dashboard?ano=${state.y}&mes=${state.m}`),
       api(`/api/profissionais/stats?ano=${state.y}&mes=${state.m}`),
@@ -507,6 +606,111 @@
     });
   }
 
+
+  // ============================================================ Resumo de um período (modo intervalo)
+  async function viewRangeDashboard(view) {
+    const [r, ps] = await Promise.all([api(`/api/periodo?${periodQS()}`), api(`/api/profissionais/stats?${periodQS()}`)]);
+    $('#pageSub').textContent = `${r.unidade} · ${rangeTitle()} · ${r.dias_no_periodo} dias`;
+    const byMonth = r.dias.length > 62;
+    const groups = byMonth ? r.por_mes : r.dias;
+    const label = (g) => (byMonth ? `${g.nome.slice(0, 3)}/${String(g.ano).slice(2)}` : fmtDate(g.date));
+    const v = r.periodo_anterior.variacao;
+    const [ay, am] = r.ate.split('-').map(Number);
+    const svaAss = r.totais.sva + r.totais.novas_assinaturas;
+
+    view.innerHTML = `
+      <div class="banner" style="border-color:var(--border-strong);background:var(--surface)">${icon('calendar')}<div class="grow">
+        Resumo de <b>${rangeTitle()}</b>. Metas e quinzenas são mensais: para acompanhá-las, abra o mês.</div>
+        <button class="btn btn-sm" id="goMonth">Ver ${MONTHS[am - 1]} ${ay}</button></div>
+
+      <div class="grid g-hero">
+        <div class="card hero fade-in">
+          <div style="flex:1;min-width:0">
+            <div class="eyebrow">Faturamento no período</div>
+            <div class="val num">${brl(r.totais.total)}</div>
+            <div class="row"><span>Média por dia <b>${brl(r.media_diaria)}</b></span><span>Dias com faturamento <b>${r.dias_com_faturamento} de ${r.dias_no_periodo}</b></span></div>
+            <div style="margin-top:12px">${v === null ? '<span class="badge neutral">sem comparativo</span>' : `<span class="badge ${v >= 0 ? 'good' : 'bad'}">${icon(v >= 0 ? 'up' : 'down')}${pct(Math.abs(v))}</span> <span class="muted">vs ${fmtFull(r.periodo_anterior.de)} a ${fmtFull(r.periodo_anterior.ate)} (${brl(r.periodo_anterior.total)})</span>`}</div>
+          </div>
+        </div>
+        <div class="card hero fade-in">
+          <div style="flex:1;min-width:0">
+            <div class="eyebrow">SVA + assinaturas no período</div>
+            <div class="val num" style="font-size:32px">${brl(svaAss)}</div>
+            <div class="row"><span>SVA <b>${brl(r.totais.sva)}</b></span><span>Novas assinaturas <b>${brl(r.totais.novas_assinaturas)}</b></span></div>
+            <div class="row" style="margin-top:6px"><span>Recorrência <b>${brl(r.totais.recorrencia)}</b></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid g-4">
+        ${kpi({ label: 'Maior dia', value: brl(r.maior_dia?.valor), foot: r.maior_dia ? `${fmtFull(r.maior_dia.date)} · ${dayName(r.maior_dia.date)}` : '—', ic: 'star' })}
+        ${kpi({ label: 'Menor dia', value: brl(r.menor_dia?.valor), foot: r.menor_dia ? `${fmtFull(r.menor_dia.date)} · ${dayName(r.menor_dia.date)}` : '—', ic: 'arrowDown' })}
+        ${kpi({ label: 'Serviços', value: brl(r.totais.servicos), foot: r.totais.total ? `${pct((r.totais.servicos / r.totais.total) * 100)} do total` : '—', ic: 'scissors' })}
+        ${kpi({ label: 'Produtos', value: brl(r.totais.produtos), foot: r.totais.total ? `${pct((r.totais.produtos / r.totais.total) * 100)} do total` : '—', ic: 'bag' })}
+      </div>
+
+      <div class="grid g-2-1">
+        <div class="card fade-in">
+          <div class="card-h"><h3>Faturamento ${byMonth ? 'por mês' : 'por dia'}</h3><div class="grow"></div>${legendHtml(SERIES.map((x) => ({ label: x.label, color: cssVar(x.color) })))}</div>
+          ${r.totais.total ? '<div class="chart-box lg"><canvas id="cRange"></canvas></div>' : emptyState('Sem faturamento no período', 'Escolha outro período ou importe os relatórios do CashBarber.')}
+        </div>
+        <div class="card fade-in">
+          <div class="card-h"><h3>Composição</h3><div class="grow"></div><span class="hint">${brl(r.totais.total)}</span></div>
+          <div class="comp-list">
+            ${SERIES.map((x) => {
+              const val = r.totais[x.key]; const p = r.totais.total ? (val / r.totais.total) * 100 : 0;
+              return `<div class="comp-item"><div class="l"><span><i style="background:${cssVar(x.color)}"></i>${x.label}</span><b class="num">${brl(val)} <span class="muted" style="font-weight:500">· ${pct(p)}</span></b></div>
+                <div class="bar"><i data-w="${p}" style="width:0;background:${cssVar(x.color)};transition:width .9s"></i></div></div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="grid g-2-1">
+        ${r.por_mes.length > 1 ? `<div class="card fade-in">
+          <div class="card-h"><h3>Mês a mês</h3></div>
+          <div class="table-wrap"><table class="t">
+            <thead><tr><th>Mês</th><th class="r">Dias</th>${SERIES.map((x) => `<th class="r">${x.short || x.label}</th>`).join('')}<th class="r">Total</th></tr></thead>
+            <tbody>${r.por_mes.map((mo) => `<tr><td><b>${mo.nome} ${mo.ano}</b></td><td class="r num">${mo.dias}</td>${SERIES.map((x) => `<td class="r num">${brl(mo[x.key])}</td>`).join('')}<td class="r num"><b>${brl(mo.total)}</b></td></tr>`).join('')}</tbody>
+            <tfoot><tr><td>Total</td><td class="r num">${r.dias_no_periodo}</td>${SERIES.map((x) => `<td class="r num">${brl(r.totais[x.key])}</td>`).join('')}<td class="r num">${brl(r.totais.total)}</td></tr></tfoot>
+          </table></div></div>` : '<div></div>'}
+        <div class="card fade-in">
+          <div class="card-h"><h3>Top profissionais</h3><div class="grow"></div><a href="#/profissionais" class="hint">ver todos →</a></div>
+          ${topPros(ps)}
+          ${ps.parcial ? '<p class="muted" style="font-size:12px;margin:12px 0 0">Os números da equipe são mensais e incluem os meses inteiros que o período toca.</p>' : ''}
+        </div>
+      </div>`;
+
+    animateBars(view);
+    $('#goMonth').onclick = () => setPeriod({ mode: 'mes', y: ay, m: am });
+    $$('.rank-item', view).forEach((el) => el.addEventListener('click', () => proDetail(Number(el.dataset.id))));
+    if (!r.totais.total) return;
+    chart($('#cRange'), {
+      type: 'bar',
+      data: {
+        labels: groups.map(label),
+        datasets: SERIES.map((x) => ({
+          label: x.label, data: groups.map((g) => g[x.key]), backgroundColor: cssVar(x.color),
+          borderColor: cssVar('--surface'), borderWidth: 1, borderRadius: 4, borderSkipped: false, maxBarThickness: byMonth ? 44 : 22, stack: 'a',
+        })),
+      },
+      options: {
+        maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        scales: { x: { stacked: true, grid: { display: false }, border: { display: false }, ticks: { maxTicksLimit: 16 } }, y: { ...moneyAxis, stacked: true } },
+        plugins: {
+          tooltip: {
+            filter: (i) => i.raw > 0,
+            callbacks: {
+              title: (it) => { const g = groups[it[0].dataIndex]; return byMonth ? `${g.nome} ${g.ano}` : `${fmtFull(g.date)} · ${g.dia_semana}`; },
+              label: (c) => ` ${c.dataset.label}: ${brl(c.raw)}`,
+              footer: (it) => `Total: ${brl(groups[it[0].dataIndex].total)}`,
+            },
+          },
+        },
+      },
+    });
+  }
+
   function hexA(hex, a) {
     const h = hex.replace('#', '');
     if (h.length !== 6) return hex;
@@ -551,7 +755,12 @@
 
   // ============================================================ Faturamento diário
   async function viewDaily(view) {
-    const d = await api(`/api/dashboard?ano=${state.y}&mes=${state.m}`);
+    const ranged = isRange();
+    const d = ranged ? await api(`/api/periodo?${periodQS()}`) : await api(`/api/dashboard?ano=${state.y}&mes=${state.m}`);
+    const multiYear = ranged && d.de.slice(0, 4) !== d.ate.slice(0, 4);
+    const dayLabel = (iso) => (multiYear ? fmtFull(iso).slice(0, 6) + iso.slice(2, 4) : fmtDate(iso));
+    const monthBreaks = ranged && d.por_mes.length > 1;
+    const subtotal = (mo) => `<tr class="subtotal"><td colspan="2">${mo.nome} ${mo.ano}</td>${SERIES.map((x) => `<td class="r num">${brl(mo[x.key])}</td>`).join('')}<td></td><td class="r num">${brl(mo.total)}</td></tr>`;
     const admin = isAdmin();
     const t = new Date();
     const todayIso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
@@ -559,31 +768,31 @@
     view.innerHTML = `
       <div class="grid g-6">
         ${SERIES.map((s) => `<div class="card kpi fade-in"><div class="top"><div class="ico" style="background:${hexA(cssVar(s.color), 0.16)};color:${cssVar(s.color)}">${icon(s.key === 'produtos' ? 'bag' : s.key === 'servicos' ? 'scissors' : s.key === 'sva' ? 'spark' : s.key === 'recorrencia' ? 'refresh' : 'ticket')}</div>${s.label}</div><div class="v num">${brl(d.totais[s.key])}</div><div class="foot">${d.totais.total ? pct((d.totais[s.key] / d.totais.total) * 100) : '0%'} do total</div></div>`).join('')}
-        ${kpi({ label: 'Faturamento total', value: brl(d.totais.total), foot: `Meta ${brl(d.mensal.meta)} · ${pct(d.mensal.percentual)}`, ic: 'cash', tone: 'accent' })}
+        ${kpi({ label: 'Faturamento total', value: brl(d.totais.total), foot: ranged ? `${d.dias_no_periodo} dias · média ${brl(d.media_diaria)}/dia` : `Meta ${brl(d.mensal.meta)} · ${pct(d.mensal.percentual)}`, ic: 'cash', tone: 'accent' })}
       </div>
       <div class="card fade-in">
-        <div class="card-h"><h3>${d.mes_nome} ${d.ano}</h3><div class="grow"></div>
+        <div class="card-h"><h3>${ranged ? rangeTitle() : `${d.mes_nome} ${d.ano}`}</h3><div class="grow"></div>
           <button class="btn btn-sm" id="exportCsv">${icon('download')} Exportar CSV</button></div>
         <div class="table-wrap">
           <table class="t" id="dailyTable">
             <thead><tr><th>Data</th><th>Dia</th>${SERIES.map((s) => `<th class="r">${s.short || s.label}</th>`).join('')}<th>Status</th><th class="r">Total</th></tr></thead>
-            <tbody>${d.dias.map((x) => `
+            <tbody>${d.dias.map((x, i) => `${monthBreaks && i > 0 && x.dia === 1 ? subtotal(d.por_mes.find((mo) => mo.ano === d.dias[i - 1].ano && mo.mes === d.dias[i - 1].mes)) : ''}
               <tr class="${x.util ? '' : 'off'} ${x.date === todayIso ? 'today' : ''}" data-date="${x.date}">
-                <td class="num"><b>${fmtDate(x.date)}</b></td><td>${x.dia_semana}${x.util ? '' : ' <span class="badge neutral" style="font-size:10.5px">não útil</span>'}</td>
+                <td class="num"><b>${dayLabel(x.date)}</b></td><td>${x.dia_semana}${x.util ? '' : ' <span class="badge neutral" style="font-size:10.5px">não útil</span>'}</td>
                 ${SERIES.map((s) => `<td class="r num">${admin ? `<input class="cell num" data-k="${s.key}" value="${num2(x[s.key])}" placeholder="0,00" inputmode="decimal" aria-label="${s.label} ${fmtDate(x.date)}">` : brl(x[s.key])}</td>`).join('')}
                 <td>${admin ? `<select class="input input-sm" data-k="status" style="width:auto">${['PREVISTO', 'REALIZADO', ...(x.status === 'DEMO' ? ['DEMO'] : [])].map((st) => `<option ${st === x.status ? 'selected' : ''}>${st}</option>`).join('')}</select>` : `<span class="status ${x.status}">${x.status}</span>`}</td>
                 <td class="r num"><b data-total>${brl(x.total)}</b></td>
               </tr>`).join('')}
-            </tbody>
-            <tfoot><tr><td colspan="2">Total do mês</td>${SERIES.map((s) => `<td class="r num">${brl(d.totais[s.key])}</td>`).join('')}<td></td><td class="r num">${brl(d.totais.total)}</td></tr></tfoot>
+            ${monthBreaks ? subtotal(d.por_mes[d.por_mes.length - 1]) : ''}</tbody>
+            <tfoot><tr><td colspan="2">${ranged ? 'Total do período' : 'Total do mês'}</td>${SERIES.map((s) => `<td class="r num">${brl(d.totais[s.key])}</td>`).join('')}<td></td><td class="r num">${brl(d.totais.total)}</td></tr></tfoot>
           </table>
         </div>
       </div>`;
 
     $('#exportCsv').onclick = () => {
       const rows = [['Data', 'Dia da semana', ...SERIES.map((s) => s.label), 'Status', 'Faturamento total']];
-      d.dias.forEach((x) => rows.push([fmtDate(x.date) + '/' + d.ano, x.dia_semana, ...SERIES.map((s) => num2(x[s.key]) || '0'), x.status, num2(x.total) || '0']));
-      download(`faturamento-${d.ano}-${String(d.mes).padStart(2, '0')}.csv`, rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n'));
+      d.dias.forEach((x) => rows.push([fmtFull(x.date), x.dia_semana, ...SERIES.map((s) => num2(x[s.key]) || '0'), x.status, num2(x.total) || '0']));
+      download(ranged ? `faturamento-${d.de}-a-${d.ate}.csv` : `faturamento-${d.ano}-${String(d.mes).padStart(2, '0')}.csv`, rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n'));
     };
     if (!admin) return;
     const save = async (tr) => {
@@ -597,7 +806,7 @@
         toast(`Dia ${fmtDate(tr.dataset.date)} salvo`);
       } catch (e) { toast(e.message, 'err'); }
     };
-    $$('#dailyTable tbody tr').forEach((tr) => {
+    $$('#dailyTable tbody tr[data-date]').forEach((tr) => {
       $$('input.cell', tr).forEach((i) => {
         i.addEventListener('change', () => {
           const st = $('[data-k="status"]', tr);
@@ -618,19 +827,21 @@
   }
 
   // ============================================================ Profissionais
+  const psTitle = (ps) => (ps.de ? ps.mes_nome : `${ps.mes_nome} ${ps.ano}`);
+
   async function viewPros(view) {
     const [ps, yr] = await Promise.all([
-      api(`/api/profissionais/stats?ano=${state.y}&mes=${state.m}`),
-      api(`/api/profissionais/ano?ano=${state.y}`),
+      api(`/api/profissionais/stats?${periodQS()}`),
+      api(`/api/profissionais/ano?ano=${periodYear()}`),
     ]);
     const list = ps.profissionais.filter((p) => p.has_data).sort((a, b) => b.faturamento_total - a.faturamento_total);
-    $('#pageSub').textContent = `${list.length} profissionais com dados em ${ps.mes_nome}`;
+    $('#pageSub').textContent = `${list.length} profissionais com dados em ${ps.mes_nome}${ps.parcial ? ' · dados mensais: o período inclui os meses inteiros que ele toca' : ''}`;
     if (!list.length) {
       const withData = yr.meses.filter((m) => m.faturamento_total > 0);
       const last = withData[withData.length - 1];
-      view.innerHTML = `<div class="card">${emptyState(`Sem dados em ${ps.mes_nome} ${ps.ano}`, 'Os números dos profissionais chegam pelo webhook do CashBarber ou podem ser lançados no painel admin.',
+      view.innerHTML = `<div class="card">${emptyState(`Sem dados em ${psTitle(ps)}`, 'Os números dos profissionais chegam pelo webhook do CashBarber ou podem ser lançados no painel admin.',
         `${last ? `<button class="btn btn-primary" id="goLast">Ver ${last.nome}</button> ` : ''}${isAdmin() ? '<a class="btn" href="#/admin/lancamentos">Lançar dados</a>' : ''}`)}</div>`;
-      $('#goLast', view)?.addEventListener('click', () => { state.m = last.mes; try { sessionStorage.setItem('ym', JSON.stringify({ y: state.y, m: state.m })); } catch {} route(); });
+      $('#goLast', view)?.addEventListener('click', () => setPeriod({ mode: 'mes', y: periodYear(), m: last.mes }));
       return;
     }
     const T = ps.total; const A = ps.media;
@@ -677,7 +888,7 @@
       </div>
 
       <div class="card fade-in">
-        <div class="card-h"><h3>Evolução mensal ${state.y}</h3><div class="grow"></div>${legendHtml(state.pros.filter((p) => yr.meses.some((m) => m.profissionais[p.name])).map((p) => ({ label: p.name, color: proColor(p.id) })))}</div>
+        <div class="card-h"><h3>Evolução mensal ${periodYear()}</h3><div class="grow"></div>${legendHtml(state.pros.filter((p) => yr.meses.some((m) => m.profissionais[p.name])).map((p) => ({ label: p.name, color: proColor(p.id) })))}</div>
         <div class="chart-box"><canvas id="cEvo"></canvas></div>
       </div>
 
@@ -767,7 +978,8 @@
   async function proDetail(id) {
     const pro = state.pros.find((p) => p.id === id);
     if (!pro) return;
-    const [ps, yr] = await Promise.all([api(`/api/profissionais/stats?ano=${state.y}&mes=${state.m}`), api(`/api/profissionais/ano?ano=${state.y}`)]);
+    const [ps, yr] = await Promise.all([api(`/api/profissionais/stats?${periodQS()}`), api(`/api/profissionais/ano?ano=${periodYear()}`)]);
+    const inPeriod = (mes) => (isRange() ? ps.meses.some((x) => x.ano === periodYear() && x.mes === mes) : mes === state.m);
     const p = ps.profissionais.find((x) => x.professional_id === id) || {};
     const extras = Object.entries(p.extras || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
     const maxE = Math.max(1, ...extras.map((e) => e[1]));
@@ -775,7 +987,7 @@
     const vsAvg = (k) => { const a = ps.media[k]; if (!a || !p[k]) return ''; const v = ((p[k] - a) / a) * 100; return `<span class="badge ${v >= 0 ? 'good' : 'bad'}" style="font-size:11px">${icon(v >= 0 ? 'up' : 'down')}${pct(Math.abs(v))}</span>`; };
     modal({
       wide: true,
-      title: `<span style="display:inline-flex;align-items:center;gap:12px"><span class="avatar" style="background:${proColor(id)};color:#fff;border:none">${esc(initials(pro.name))}</span>${esc(pro.name)} <span class="muted" style="font-weight:500;font-size:13px">· ${ps.mes_nome} ${ps.ano}</span></span>`,
+      title: `<span style="display:inline-flex;align-items:center;gap:12px"><span class="avatar" style="background:${proColor(id)};color:#fff;border:none">${esc(initials(pro.name))}</span>${esc(pro.name)} <span class="muted" style="font-weight:500;font-size:13px">· ${psTitle(ps)}</span></span>`,
       body: !p.has_data ? emptyState('Sem dados neste mês', 'Selecione outro mês no topo da página.') : `
         <div class="grid g-4" style="gap:12px">
           ${[['Faturamento', brl(p.faturamento_total), 'faturamento_total'], ['Ticket médio', brl(p.ticket_medio), 'ticket_medio'], ['Clientes', int(p.clientes_atendidos), 'clientes_atendidos'], ['Comissão', brl(p.comissao), 'comissao'],
@@ -786,14 +998,14 @@
         <div class="grid g-2" style="gap:16px">
           <div><h4 style="font-size:14px;margin-bottom:12px">Serviços adicionais</h4>
             ${extras.length ? `<div class="comp-list">${extras.map(([k, v]) => `<div class="comp-item"><div class="l"><span>${esc(k)}</span><b class="num">${int(v)}</b></div><div class="bar"><i style="width:${(v / maxE) * 100}%;background:${proColor(id)}"></i></div></div>`).join('')}</div>` : '<p class="muted">Nenhum SVA registrado.</p>'}</div>
-          <div><h4 style="font-size:14px;margin-bottom:12px">Faturamento mês a mês · ${state.y}</h4><div class="chart-box sm"><canvas id="cProEvo"></canvas></div></div>
+          <div><h4 style="font-size:14px;margin-bottom:12px">Faturamento mês a mês · ${periodYear()}</h4><div class="chart-box sm"><canvas id="cProEvo"></canvas></div></div>
         </div>`,
       onMount: (el) => {
         const cv = $('#cProEvo', el);
         if (!cv) return;
         chart(cv, {
           type: 'bar',
-          data: { labels: MONTHS.map((m) => m.slice(0, 3)), datasets: [{ label: 'Faturamento', data: yr.meses.map((m) => m.profissionais[pro.name] || 0), backgroundColor: yr.meses.map((m) => (m.mes === state.m ? proColor(id) : hexA(proColor(id), 0.35))), borderRadius: 4, maxBarThickness: 28 }] },
+          data: { labels: MONTHS.map((m) => m.slice(0, 3)), datasets: [{ label: 'Faturamento', data: yr.meses.map((m) => m.profissionais[pro.name] || 0), backgroundColor: yr.meses.map((m) => (inPeriod(m.mes) ? proColor(id) : hexA(proColor(id), 0.35))), borderRadius: 4, maxBarThickness: 28 }] },
           options: { maintainAspectRatio: false, scales: { y: { ...moneyAxis, beginAtZero: true }, x: { grid: { display: false }, border: { display: false } } }, plugins: { tooltip: { callbacks: { label: (c) => ` ${brl(c.raw)}` } } } },
         }, modalCharts);
       },
@@ -1111,6 +1323,7 @@
   const ACT_TITLE = { venda: 'Venda', assinatura: 'Nova assinatura', cancelamento: 'Cancelamento', fechamento: 'Fechamento do dia', mensal: 'Resumo mensal', outro: 'Evento' };
 
   async function viewHome(view) {
+    if (isRange()) return viewRangeDashboard(view);
     if (!window.BarberBento) { view.innerHTML = `<div class="card">${emptyState('Página inicial não compilada', 'Rode <code>npm run build</code> para gerar /public/bento.')}</div>`; return; }
     const [d, ps, act] = await Promise.all([
       api(`/api/dashboard?ano=${state.y}&mes=${state.m}`),

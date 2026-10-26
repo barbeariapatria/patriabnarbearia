@@ -102,8 +102,8 @@ const PASSWORD_MANAGED = !!process.env.ADMIN_PASSWORD;
 async function ensureDefaultAdmin() {
   const username = (process.env.ADMIN_USER || 'barbeariapatria@gmail.com').trim();
   const envPassword = process.env.ADMIN_PASSWORD;
-  if (SINGLE_USER) await db.run('DELETE FROM users WHERE username <> ?', username);
-  const existing = await db.get('SELECT * FROM users WHERE username = ?', username);
+  if (SINGLE_USER) await db.run('DELETE FROM users WHERE lower(username) <> lower(?)', username);
+  const existing = await db.get('SELECT * FROM users WHERE lower(username) = lower(?)', username);
   if (existing) {
     // ADMIN_PASSWORD é a senha oficial: se mudar na hospedagem, passa a valer no próximo início
     if (envPassword && !verifyPassword(envPassword, existing.password_hash)) {
@@ -113,7 +113,7 @@ async function ensureDefaultAdmin() {
     return;
   }
   const password = envPassword || crypto.randomBytes(9).toString('base64url');
-  await db.run('INSERT OR IGNORE INTO users(username, name, password_hash, role, must_change) VALUES(?, ?, ?, ?, ?)',
+  await db.run('INSERT INTO users(username, name, password_hash, role, must_change) VALUES(?, ?, ?, ?, ?) ON CONFLICT DO NOTHING',
     username, 'Pátria Barbearia', hashPassword(password), 'admin', envPassword ? 0 : 1);
   console.log(`👤 Login criado: ${username} / ${envPassword ? '(senha definida em ADMIN_PASSWORD)' : `${password}  ← senha temporária, defina ADMIN_PASSWORD`}`);
 }
