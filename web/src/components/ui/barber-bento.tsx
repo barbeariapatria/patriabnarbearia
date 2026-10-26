@@ -476,7 +476,7 @@ function TeamTile({ pros, reduced, onNavigate }: { pros: BarberPro[]; reduced: b
               {front.rank}º · {front.pro.name}
             </p>
             <p className="mt-1 truncate text-[11px] text-muted-foreground">
-              {front.pro.clientes} clientes · ticket {brl(front.pro.ticket)}
+              {front.pro.clientes} atendimentos · ticket {brl(front.pro.ticket)}
             </p>
           </div>
           <p className="shrink-0 font-mono text-[15px] font-semibold tabular-nums">{brlShort(front.pro.faturamento)}</p>

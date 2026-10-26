@@ -828,7 +828,7 @@
         <div class="pos">${i + 1}</div>
         <div class="avatar" style="background:${proColor(p.professional_id)};color:#fff;border:none">${esc(initials(p.name))}</div>
         <div class="info"><b>${esc(p.name)}</b><div class="bar"><i data-w="${(p.faturamento_total / max) * 100}" style="width:0;transition:width .9s;background:${proColor(p.professional_id)}"></i></div></div>
-        <div class="amt num">${brl(p.faturamento_total)}<small>${int(p.clientes_atendidos)} clientes</small></div>
+        <div class="amt num">${brl(p.faturamento_total)}<small>${int(p.clientes_atendidos)} atendimentos</small></div>
       </div>`).join('')}</div>`;
   }
 
@@ -930,13 +930,13 @@
     const maxExtra = Math.max(1, ...list.flatMap((p) => catalog.map((k) => Number(p.extras[k] || 0))));
     const cols = [
       ['faturamento_total', 'Faturamento', brl], ['faturamento_assinatura', 'Fat. assinatura', brl], ['comissao', 'Comissão', brl], ['ticket_medio', 'Ticket médio', brl],
-      ['clientes_atendidos', 'Clientes', int], ['geracao_demanda', 'Geração de demanda', int], ['servicos_realizados', 'Serviços', int], ['venda_produtos', 'Venda produtos', brl], ['qtd_produtos', 'Qtd. produtos', int],
+      ['clientes_atendidos', 'Atendimentos', int], ['geracao_demanda', 'Geração de demanda', int], ['servicos_realizados', 'Serviços', int], ['venda_produtos', 'Venda produtos', brl], ['qtd_produtos', 'Qtd. produtos', int],
     ];
 
     view.innerHTML = `
       <div class="grid g-4">
         ${kpi({ label: 'Faturamento da equipe', value: brl(T.faturamento_total), foot: `Média ${brl(A.faturamento_total)} por profissional`, ic: 'cash', tone: 'accent' })}
-        ${kpi({ label: 'Clientes atendidos', value: int(T.clientes_atendidos), foot: `${int(T.geracao_demanda)} em geração de demanda`, ic: 'users' })}
+        ${kpi({ label: 'Atendimentos', value: int(T.clientes_atendidos), foot: `${int(T.geracao_demanda)} em geração de demanda`, ic: 'users' })}
         ${kpi({ label: 'Ticket médio (equipe)', value: brl(teamTicket(list)), foot: `Média simples dos tickets: ${brl(A.ticket_medio)}`, ic: 'ticket' })}
         ${kpi({ label: 'Comissões', value: brl(T.comissao), foot: `Assinaturas ${brl(T.faturamento_assinatura)}`, ic: 'star' })}
       </div>
@@ -951,7 +951,7 @@
             <div class="big num">${brl(p.faturamento_total)}</div>
             <div class="progress" style="height:6px;margin-top:10px"><i data-w="${share}" style="width:0;background:${proColor(p.professional_id)}"></i></div>
             <div class="mini">
-              <div>Clientes<b>${int(p.clientes_atendidos)}</b></div>
+              <div>Atendimentos<b>${int(p.clientes_atendidos)}</b></div>
               <div>Ticket<b>${brlShort(p.ticket_medio)}</b></div>
               <div>Comissão<b>${brlShort(p.comissao)}</b></div>
             </div>
@@ -1072,7 +1072,7 @@
       title: `<span style="display:inline-flex;align-items:center;gap:12px"><span class="avatar" style="background:${proColor(id)};color:#fff;border:none">${esc(initials(pro.name))}</span>${esc(pro.name)} <span class="muted" style="font-weight:500;font-size:13px">· ${psTitle(ps)}</span></span>`,
       body: !p.has_data ? emptyState('Sem dados neste mês', 'Selecione outro mês no topo da página.') : `
         <div class="grid g-4" style="gap:12px">
-          ${[['Faturamento', brl(p.faturamento_total), 'faturamento_total'], ['Ticket médio', brl(p.ticket_medio), 'ticket_medio'], ['Clientes', int(p.clientes_atendidos), 'clientes_atendidos'], ['Comissão', brl(p.comissao), 'comissao'],
+          ${[['Faturamento', brl(p.faturamento_total), 'faturamento_total'], ['Ticket médio', brl(p.ticket_medio), 'ticket_medio'], ['Atendimentos', int(p.clientes_atendidos), 'clientes_atendidos'], ['Comissão', brl(p.comissao), 'comissao'],
             ['Fat. assinatura', brl(p.faturamento_assinatura), 'faturamento_assinatura'], ['Geração de demanda', int(p.geracao_demanda), 'geracao_demanda'], ['Serviços realizados', int(p.servicos_realizados), 'servicos_realizados'], ['Venda de produtos', `${brl(p.venda_produtos)} <span class="muted" style="font-size:12px">(${int(p.qtd_produtos)} un.)</span>`, 'venda_produtos']]
             .map(([l, v, k]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div style="font-family:var(--font-display);font-size:18px;font-weight:700" class="num">${v}</div><div style="margin-top:4px;font-size:11px">${vsAvg(k)} ${vsAvg(k) ? '<span class="muted">vs média</span>' : ''}</div></div>`).join('')}
         </div>
@@ -1103,7 +1103,7 @@
       <div class="card fade-in">
         <div class="card-h"><h3>${ps.mes_nome} ${ps.ano}</h3><div class="grow"></div><a class="btn btn-sm" href="#/admin/equipe">${icon('plus')} Novo profissional</a></div>
         ${actives.length ? `<div class="table-wrap"><table class="t">
-          <thead><tr><th>Profissional</th><th class="r">Faturamento</th><th class="r">Assinatura</th><th class="r">Comissão</th><th class="r">Ticket</th><th class="r">Clientes</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>Profissional</th><th class="r">Faturamento</th><th class="r">Assinatura</th><th class="r">Comissão</th><th class="r">Ticket</th><th class="r">Atendimentos</th><th>Status</th><th></th></tr></thead>
           <tbody>${actives.map((pro) => { const p = ps.profissionais.find((x) => x.professional_id === pro.id) || {}; return `<tr>
             <td><span style="display:inline-flex;align-items:center;gap:10px"><span class="avatar" style="width:30px;height:30px;font-size:11px;background:${proColor(pro.id)};color:#fff;border:none">${esc(initials(pro.name))}</span><b>${esc(pro.name)}</b></span></td>
             <td class="r num">${p.has_data ? brl(p.faturamento_total) : '—'}</td><td class="r num">${p.has_data ? brl(p.faturamento_assinatura) : '—'}</td>
@@ -1122,7 +1122,7 @@
         title: `${esc(pro.name)} · ${ps.mes_nome} ${ps.ano}`,
         body: `<form id="lancForm"><div class="form-grid g3">
           ${f('faturamento_total', 'Faturamento total (R$)')}${f('faturamento_assinatura', 'Faturamento de assinatura (R$)')}${f('comissao', 'Comissão (R$)')}
-          ${f('ticket_medio', 'Ticket médio (R$) — vazio = automático')}${f('clientes_atendidos', 'Clientes atendidos', false)}${f('geracao_demanda', 'Geração de demanda (novos + SP)', false)}
+          ${f('ticket_medio', 'Ticket médio (R$) — vazio = automático')}${f('clientes_atendidos', 'Atendimentos', false)}${f('geracao_demanda', 'Geração de demanda (novos + SP)', false)}
           ${f('servicos_realizados', 'Serviços realizados', false)}${f('venda_produtos', 'Venda de produtos (R$)')}${f('qtd_produtos', 'Qtd. de produtos', false)}
         </div>
         <h4 style="font-size:14px;margin:8px 0 12px">Serviços adicionais (quantidade)</h4>
