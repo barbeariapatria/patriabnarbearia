@@ -1,0 +1,15 @@
+{
+  "name": "robo-cashbarber",
+  "private": true,
+  "type": "module",
+  "description": "Robô que exporta os relatórios do CashBarber e envia para o painel",
+  "scripts": {
+    "sincronizar": "node sync.mjs",
+    "testar": "MODO=testar node sync.mjs",
+    "mapear": "MODO=mapear node sync.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.55.0",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -4,3 +4,5 @@ data/
 *.zip
 .vercel/
 public/vendor/
+robo/node_modules/
+robo/saida/

@@ -1,0 +1,61 @@
+# Robô do CashBarber: exporta os relatórios do mês e envia para o painel (docs/robo-cashbarber.md)
+name: Robô CashBarber
+
+on:
+  schedule:
+    - cron: "0 23 * * *" # todo dia às 20h de Brasília (23h UTC); o GitHub pode atrasar alguns minutos
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "sincronizar = importa no painel · testar = só exporta e confere · mapear = levanta as páginas do CashBarber"
+        type: choice
+        options: [sincronizar, testar, mapear]
+        default: sincronizar
+      mes:
+        description: "Mês específico (AAAA-MM). Vazio = mês corrente (no dia 1º, também o anterior)"
+        required: false
+
+concurrency:
+  group: robo-cashbarber
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sincronizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: robo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Instalar o robô
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Rodar o robô
+        env:
+          CASHBARBER_EMAIL: ${{ secrets.CASHBARBER_EMAIL }}
+          CASHBARBER_PASSWORD: ${{ secrets.CASHBARBER_PASSWORD }}
+          CASHBARBER_URL: ${{ vars.CASHBARBER_URL || 'https://app.cashbarber.com.br' }}
+          PAINEL_URL: ${{ secrets.PAINEL_URL }}
+          IMPORT_TOKEN: ${{ secrets.IMPORT_TOKEN }}
+          MODO: ${{ inputs.modo || 'sincronizar' }}
+          MES: ${{ inputs.mes }}
+        run: node sync.mjs
+      # Só o resumo (e o mapa no modo mapear): nenhum dado de cliente é salvo — o repositório é público
+      - name: Guardar o resumo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: robo-cashbarber-${{ github.run_id }}
+          path: |
+            robo/saida/resultado.json
+            robo/saida/mapa.json
+          if-no-files-found: ignore
+          retention-days: 7
