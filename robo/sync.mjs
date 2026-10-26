@@ -259,6 +259,52 @@ async function lerAviso(page) {
   return { texto };
 }
 
+// Escolhe a filial nos filtros do relatório. Vazio, o CashBarber entende "todas as filiais" e o usuário do robô
+// recebe "Você não possui acesso a todas as filiais". Só mexe em campos de filial/unidade/empresa e só escolhe a
+// opção da Pátria (ou a única opção que não seja "todas"). Nunca escolhe profissional, cliente etc.
+const RE_FILIAL = /filia|unidade|empresa|loja|estabelecimento/i;
+const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'p[aá]tria', 'i');
+async function escolherFilial(page) {
+  const feitos = [];
+  // 1) <select> comum
+  const selects = await page.evaluate((reF) => {
+    const re = new RegExp(reF, 'i');
+    const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    return [...document.querySelectorAll('select')].filter(vis).map((sel, i) => {
+      sel.setAttribute('data-robo-sel', String(i));
+      const rotulo = `${sel.name} ${sel.id} ${sel.closest('.form-group, .col, div')?.querySelector('label')?.innerText || ''}`;
+      return { i, rotulo, filial: re.test(rotulo), opcoes: [...sel.options].map((o) => ({ v: o.value, t: o.text.trim() })), atual: sel.value };
+    });
+  }, RE_FILIAL.source);
+  for (const sel of selects.filter((x) => x.filial)) {
+    const reais = sel.opcoes.filter((o) => o.v && !/todas|todos|selecione/i.test(o.t));
+    const op = reais.find((o) => RE_PATRIA.test(o.t)) || (reais.length === 1 ? reais[0] : null);
+    if (op && sel.atual !== op.v) {
+      await page.locator(`[data-robo-sel="${sel.i}"]`).selectOption(op.v).catch(() => {});
+      feitos.push(`filial "${op.t}"`);
+    }
+  }
+  // 2) campo com lista (MUI Autocomplete): botão "Open"
+  const autos = page.locator('.MuiAutocomplete-root:visible');
+  const n = await autos.count();
+  for (let i = 0; i < n; i++) {
+    const a = autos.nth(i);
+    const rotulo = await a.evaluate((e) => `${e.querySelector('label')?.innerText || ''} ${e.querySelector('input')?.placeholder || ''} ${e.closest('.form-group, .col, div')?.querySelector('label')?.innerText || ''}`).catch(() => '');
+    if (!RE_FILIAL.test(rotulo)) continue;
+    const valor = await a.locator('input').first().inputValue().catch(() => '');
+    if (valor && RE_PATRIA.test(valor)) continue;
+    await a.locator('.MuiAutocomplete-popupIndicator, button[aria-label="Open"]').first().click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(800);
+    const opcoes = page.locator('[role="listbox"] [role="option"]:visible');
+    const textos = await opcoes.allInnerTexts().catch(() => []);
+    const reais = textos.map((t, k) => ({ t: t.trim(), k })).filter((o) => o.t && !/todas|todos|selecione/i.test(o.t));
+    const op = reais.find((o) => RE_PATRIA.test(o.t)) || (reais.length === 1 ? reais[0] : null);
+    if (op) { await opcoes.nth(op.k).click().catch(() => {}); feitos.push(`filial "${op.t}"`); }
+    else { await page.keyboard.press('Escape').catch(() => {}); log(`  (campo "${rotulo.trim()}" com ${reais.length} opções; nenhuma escolhida)`); }
+  }
+  return feitos;
+}
+
 // botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
 async function aplicarFiltro(page) {
   const filtrar = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible')
@@ -470,9 +516,10 @@ async function main() {
           if (pg.periodo) {
             const como = await definirPeriodo(page, per);
             if (!como) throw new Error('não achei o filtro de datas');
+            const filial = await escolherFilial(page);
             // no CashBarber o arquivo só sai depois de clicar em Filtrar
             const filtrou = await aplicarFiltro(page);
-            log(`  ${nome}: período por ${como}${filtrou ? ' + Filtrar' : ''}`);
+            log(`  ${nome}: período por ${como}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ''}`);
             const aviso = await lerAviso(page);
             if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex = aviso.download || null; }
           }
@@ -480,6 +527,8 @@ async function main() {
           if (!ex || !ex.csv?.trim()) {
             const aviso = await lerAviso(page);
             const lista = (await clicaveis(page)).map((x) => `[${x.desc}]`).slice(0, 25);
+            const rotulos = await page.evaluate(() => [...document.querySelectorAll('label')].map((l) => l.innerText.trim()).filter((t) => t && t.length < 40).slice(0, 12));
+            if (rotulos.length) lista.unshift(`campos: ${rotulos.join(' / ')} ·`);
             throw new Error(`não consegui exportar${aviso?.texto ? ` · aviso: "${aviso.texto}"` : ''} · botões do relatório: ${lista.join(' ') || '(nenhum)'}`);
           }
           const tipo = tipoDoCsv(ex.csv);
