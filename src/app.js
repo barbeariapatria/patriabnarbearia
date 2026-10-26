@@ -100,6 +100,11 @@ app.post('/api/auth/password', auth.requireAuth, wrap(async (req) => {
 
 // ---------------------------------------------------------------- Dashboard (leitura)
 app.get('/api/dashboard', auth.requireAuth, wrap((req) => { const { y, m } = ym(req.query); return metrics.dashboard(y, m); }));
+app.get('/api/relatorios', auth.requireAuth, wrap((req) => {
+  if (req.query.de && req.query.ate) return metrics.monthlyReports({ de: req.query.de, ate: req.query.ate });
+  const { y, m } = ym(req.query);
+  return metrics.monthlyReports({ y, m });
+}));
 app.get('/api/periodo', auth.requireAuth, wrap((req) => metrics.rangeReport(req.query.de, req.query.ate)));
 app.get('/api/profissionais/stats', auth.requireAuth, wrap((req) => {
   if (req.query.de && req.query.ate) return metrics.proStatsRange(req.query.de, req.query.ate);
@@ -194,7 +199,7 @@ app.delete('/api/admin/profissionais/:id/mensal', auth.requireAdmin, wrap(async 
 // ---------------------------------------------------------------- Admin: configurações
 app.get('/api/admin/config', auth.requireAdmin, wrap(async () => {
   const s = await getAllSettings();
-  delete s.session_secret; delete s.seeded; delete s.ultima_importacao;
+  delete s.session_secret; delete s.seeded; delete s.ultima_importacao; delete s.cashbarber_equipe;
   return s;
 }));
 app.put('/api/admin/config', auth.requireAdmin, wrap(async (req) => {
@@ -289,7 +294,7 @@ app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
   const plan = await importer.analyze(files);
   if (!req.body.confirmar) return { plan };
   const result = await importer.apply(plan);
-  await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, resumo: plan.resumo, extras_mes: plan.extras_mes });
+  await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios });
   return { result, plan };
 }));
 app.get('/api/admin/importar', auth.requireAdmin, wrap(async () => ({ ultima: (await getAllSettings()).ultima_importacao || null })));

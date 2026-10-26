@@ -287,4 +287,71 @@ async function proStatsRange(deIn, ateIn) {
   return { de, ate, meses, parcial, mes_nome: label, ano: y2, mes: m2, profissionais: list, total, media };
 }
 
-module.exports = { dashboard, proStats, proYear, rangeReport, proStatsRange, getMonthDays, todayIso, todayParts, FIELDS, MONTHS, WEEKDAYS, iso, round2, daysInMonth };
+// Resumos importados do CashBarber (agenda, assinaturas, serviços) nos meses do período
+async function monthlyReports({ y, m, de, ate }) {
+  let from; let to;
+  if (de && ate) {
+    const r = parseRange(de, ate);
+    const [y1, m1] = r.de.split('-').map(Number); const [y2, m2] = r.ate.split('-').map(Number);
+    from = y1 * 100 + m1; to = y2 * 100 + m2;
+  } else { from = to = y * 100 + m; }
+  const rows = await db.all('SELECT year, month, kind, data FROM monthly_reports WHERE year * 100 + month BETWEEN ? AND ? ORDER BY year, month', from, to);
+  const parse = (r) => { try { return JSON.parse(r.data); } catch { return null; } };
+  const of = (kind) => rows.filter((r) => r.kind === kind).map((r) => ({ ano: r.year, mes: r.month, data: parse(r) })).filter((r) => r.data);
+
+  // Agenda: soma as contagens de todos os meses
+  const agendaRows = of('agenda');
+  let agenda = null;
+  if (agendaRows.length) {
+    const keys = ['total', 'finalizados', 'cancelados', 'agendados', 'futuros', 'faltas', 'app', 'clube'];
+    const sumInto = (acc, x) => { for (const k of keys) acc[k] = (acc[k] || 0) + (x[k] || 0); return acc; };
+    const totais = agendaRows.reduce((acc, r) => sumInto(acc, r.data.totais), {});
+    const byPro = new Map();
+    for (const r of agendaRows) for (const p of r.data.profissionais) {
+      const cur = byPro.get(p.professional_id) || { professional_id: p.professional_id, nome: p.nome };
+      byPro.set(p.professional_id, sumInto(cur, p));
+    }
+    const names = Object.fromEntries((await db.all('SELECT id, name FROM professionals')).map((p) => [p.id, p.name]));
+    agenda = {
+      meses: agendaRows.map((r) => ({ ano: r.ano, mes: r.mes })),
+      totais,
+      profissionais: [...byPro.values()].map((p) => ({ ...p, nome: names[p.professional_id] || p.nome })).sort((a, b) => b.total - a.total),
+      por_dia: agendaRows.flatMap((r) => r.data.por_dia || []),
+    };
+  }
+
+  // Assinaturas: a base é uma foto do mês mais recente; cancelamentos e novas somam no período
+  const assRows = of('assinaturas');
+  let assinaturas = null;
+  if (assRows.length) {
+    const last = assRows[assRows.length - 1];
+    const motivos = {};
+    for (const r of assRows) for (const [k, n] of r.data.motivos || []) motivos[k] = (motivos[k] || 0) + n;
+    const sumField = (k) => (assRows.some((r) => r.data[k] != null) ? assRows.reduce((acc, r) => acc + (r.data[k] || 0), 0) : null);
+    assinaturas = {
+      referencia: { ano: last.ano, mes: last.mes, nome: `${MONTHS[last.mes - 1]}/${last.ano}` },
+      ativos: last.data.ativos, inadimplentes: last.data.inadimplentes, planos: last.data.planos || [],
+      novas_no_periodo: sumField('novas_no_mes'),
+      cancelamentos: sumField('cancelamentos'),
+      motivos: Object.entries(motivos).sort((a, b) => b[1] - a[1]),
+    };
+  }
+
+  // Serviços: soma quantidades e faturamento por serviço
+  const servRows = of('servicos');
+  let servicos = null;
+  if (servRows.length) {
+    const map = new Map();
+    for (const r of servRows) for (const s of r.data.lista || []) {
+      const key = s.catalogo || s.nome;
+      const cur = map.get(key) || { nome: key, quantidade: 0, faturado: 0, sva: s.sva };
+      cur.quantidade += s.quantidade; cur.faturado = round2(cur.faturado + s.faturado);
+      map.set(key, cur);
+    }
+    const lista = [...map.values()].sort((a, b) => b.faturado - a.faturado);
+    servicos = { lista, sva_total: round2(lista.filter((s) => s.sva).reduce((a, s) => a + s.faturado, 0)), total: round2(lista.reduce((a, s) => a + s.faturado, 0)) };
+  }
+  return { agenda, assinaturas, servicos };
+}
+
+module.exports = { dashboard, proStats, proYear, rangeReport, proStatsRange, monthlyReports, getMonthDays, todayIso, todayParts, FIELDS, MONTHS, WEEKDAYS, iso, round2, daysInMonth };

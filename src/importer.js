@@ -1,13 +1,15 @@
-// Importação dos relatórios exportados do CashBarber (CSV).
-// Relatórios reconhecidos pelo cabeçalho:
+// Importação dos relatórios exportados do CashBarber (CSV). Reconhecidos pelo cabeçalho:
 //   - Comandas:      "ID da comanda", "Profissional", "Cliente", "Tipo", "Valor comanda fechada / assinatura", "Data e hora"
+//   - Agendamentos:  "Profissional", "Origem agendamento", "Acesso ao clube", "Status", "Status do cliente", "Data e hora"
 //   - Serviços:      "Serviço", "Valor unitário", "Faturado", "Quantidade realizado"
 //   - Assinantes:    "Cliente", "Plano", "Status", "Data de criação"
 //   - Cancelamentos: "Plano", "Cliente", "Data assinatura", "Data de cancelamento", "Motivo"
-// Os valores por dia vêm das comandas; a divisão entre serviços, SVA e produtos usa a proporção do relatório de serviços do mês.
-const { db, tx, getSetting } = require('./db');
-const { iso, round2, daysInMonth } = require('./metrics');
-const { normalize } = require('./webhook');
+//   - Equipe:        "ID", "Nome", "E-mail", "Status", "Tipo", "Criado em"
+// Os valores por dia vêm das comandas; a divisão entre serviços, SVA e produtos usa a proporção do relatório de serviços.
+// Dados pessoais dos clientes (nome, telefone, e-mail) são lidos só para contar e nunca são gravados.
+const { db, tx, getSetting, setSetting } = require('./db');
+const { iso, round2, daysInMonth, todayIso, MONTHS } = require('./metrics');
+const { normalize, matchProfessional, displayName, directory } = require('./team');
 
 function parseCSV(text) {
   const rows = [];
@@ -28,7 +30,7 @@ function parseCSV(text) {
   }
   row.push(field);
   if (row.some((v) => v !== '')) rows.push(row);
-  const [header, ...data] = rows;
+  const [header = [], ...data] = rows;
   const keys = header.map((h) => normalize(h));
   return data.map((r) => Object.fromEntries(keys.map((k, i) => [k, (r[i] ?? '').trim()])));
 }
@@ -43,30 +45,24 @@ const brDate = (v) => { const m = String(v || '').match(/(\d{2})\/(\d{2})\/(\d{4
 function detect(rows) {
   const k = Object.keys(rows[0] || {});
   if (k.includes('ID DA COMANDA')) return 'comandas';
+  if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
+  if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
   return null;
 }
 
 // Serviços principais (corte/barba); os demais contam como SVA (serviço de valor agregado)
 const CORE_SERVICES = ['CABELO', 'BARBA', 'CABELO E BARBA', 'PEZINHO', 'BIGODE', 'CORTE'];
-const NOT_PROFESSIONAL = ['N/A', 'RECEPCAO', 'RECEPÇÃO', ''];
+const NOT_PROFESSIONAL = ['N/A', 'RECEPCAO', ''];
 const NEW_CLIENT = /NOV[OA] CADASTRO|CADASTRO NOV[OA]|CLIENTE NOV[OA]/;
 
 // Nomes do CashBarber x catálogo do painel (ex.: "Depilação de nariz" = "DEP. NARIZ")
 const serviceKey = (n) => normalize(n).replace(/\bDEPILACAO( DE)?\b/g, 'DEP').replace(/\bHIDRATACAO( DE)?\b/g, 'HID')
   .replace(/\bPIGMENTACAO( DE)?\b/g, 'PIG').replace(/\s+/g, '');
 
-// Liga o nome completo do CashBarber ao profissional já cadastrado (ex.: "Maurício Chagas da Silva" → "Mauricio")
-function matchProfessional(fullName, pros) {
-  const full = normalize(fullName);
-  const first = full.split(' ')[0];
-  return pros.find((p) => normalize(p.external_id) === full)
-    || pros.find((p) => normalize(p.name) === full)
-    || (pros.filter((p) => normalize(p.name).split(' ')[0] === first).length === 1
-      ? pros.find((p) => normalize(p.name).split(' ')[0] === first) : null);
-}
+const monthsOf = (dates) => [...new Set(dates.map((d) => d.slice(0, 7)))].sort();
 
 /** Analisa os arquivos e devolve o plano de importação (nada é gravado aqui). */
 async function analyze(files) {
@@ -79,153 +75,268 @@ async function analyze(files) {
     if (!type) { ignored.push(f.name); continue; }
     reports[type] = rows;
   }
-  if (!reports.comandas) throw new Error('Envie o relatório de comandas (colunas "ID da comanda", "Profissional", "Valor comanda fechada / assinatura", "Data e hora").');
+  if (!Object.keys(reports).length) throw new Error('Nenhum relatório do CashBarber reconhecido nos arquivos enviados.');
 
-  const comandas = reports.comandas.map((r) => ({
+  // ---- mês do relatório (pelas comandas e/ou agendamentos)
+  const comandas = (reports.comandas || []).map((r) => ({
     pro: r.PROFISSIONAL, cliente: r.CLIENTE, tipo: normalize(r.TIPO), valor: money(r['VALOR COMANDA FECHADA / ASSINATURA']), date: brDate(r['DATA E HORA']),
   })).filter((c) => c.date);
-  const months = [...new Set(comandas.map((c) => c.date.slice(0, 7)))].sort();
-  if (months.length !== 1) throw new Error(`O relatório de comandas deve ser de um único mês (encontrados: ${months.join(', ')}).`);
-  const [y, m] = months[0].split('-').map(Number);
+  const agendamentos = (reports.agendamentos || []).map((r) => ({
+    pro: r.PROFISSIONAL, origem: normalize(r['ORIGEM AGENDAMENTO']), clube: normalize(r['ACESSO AO CLUBE']) === 'SIM',
+    status: normalize(r.STATUS), cliente_status: normalize(r['STATUS DO CLIENTE']), date: brDate(r['DATA E HORA']),
+  })).filter((a) => a.date);
+  const months = monthsOf([...comandas, ...agendamentos].map((x) => x.date));
+  if (months.length > 1) throw new Error(`Os relatórios precisam ser de um único mês (encontrados: ${months.join(', ')}).`);
+  const needsMonth = ['servicos', 'assinantes', 'cancelamentos'].some((k) => reports[k]);
+  if (!months.length && needsMonth) throw new Error('Envie junto o relatório de comandas ou de agendamentos: é por eles que o painel sabe de qual mês são os dados.');
+  const [y, m] = months.length ? months[0].split('-').map(Number) : [null, null];
 
-  // Proporção de SVA e produtos dentro do valor das comandas (do relatório de serviços)
+  // ---- equipe: liga IDs e nomes completos do CashBarber aos profissionais do painel
+  const existing = await db.all('SELECT * FROM professionals');
+  let dir = await directory();
+  const pros = existing.map((p) => ({ ...p })); // cópia que recebe as mudanças previstas (IDs, novos)
+  let equipe = null;
+  if (reports.equipe) {
+    const entries = reports.equipe
+      .map((r) => ({ id: r.ID, nome: r.NOME, tipo: normalize(r.TIPO), ativo: r.STATUS === '1', desde: brDate(r['CRIADO EM']) }))
+      .filter((e) => e.id && e.nome);
+    dir = entries.map(({ id, nome, tipo, ativo, desde }) => ({ id, nome, tipo, ativo, desde }));
+    const team = entries.filter((e) => e.tipo === 'PROFISSIONAL' && !NOT_PROFESSIONAL.includes(normalize(e.nome)));
+    const linked = [];
+    const profissionais = team.map((e) => {
+      const match = matchProfessional(e.nome, pros.filter((p) => !linked.includes(p)), dir, e.id);
+      let target = match;
+      if (!target) {
+        target = { id: null, name: displayName(e.nome, pros), external_id: e.id, active: e.ativo ? 1 : 0, _novo: true };
+        pros.push(target);
+      } else {
+        target.external_id = e.id; target.active = e.ativo ? 1 : 0;
+      }
+      linked.push(target);
+      return { id_cashbarber: e.id, nome_completo: e.nome, nome: target.name, id: target.id, existente: !target._novo, ativo: e.ativo, desde: e.desde };
+    });
+    const fora = pros.filter((p) => !p._novo && !linked.includes(p) && p.active);
+    for (const p of fora) p.active = 0;
+    equipe = {
+      profissionais,
+      inativar: fora.map((p) => ({ id: p.id, nome: p.name })),
+      outros_usuarios: entries.filter((e) => !team.includes(e)).map((e) => `${e.nome} (${e.tipo === 'ADMIN' ? 'admin' : e.tipo.toLowerCase()})`),
+    };
+  }
+  const resolve = (fullName) => {
+    const p = matchProfessional(fullName, pros, dir);
+    if (p) return { id: p.id, nome: p.name, existente: !p._novo };
+    const novo = { id: null, name: displayName(fullName, pros), external_id: null, active: 1, _novo: true };
+    pros.push(novo);
+    return { id: null, nome: novo.name, existente: false };
+  };
+
+  // ---- serviços do mês (SVA x principais)
   const extrasCatalog = (await getSetting('extras_catalog')) || [];
-  const comandaTotal = comandas.filter((c) => c.tipo !== 'ASSINATURA').reduce((s, c) => s + c.valor, 0);
-  let svaShare = 0; let prodShare = 0; const servicos = []; let svaTotal = 0; let servTotal = 0;
-  if (reports.servicos) {
-    for (const r of reports.servicos) {
-      const nome = r.SERVICO; if (!nome || normalize(nome) === 'TOTAL') continue;
-      const item = { nome, quantidade: money(r['QUANTIDADE REALIZADO']), faturado: money(r.FATURADO), sva: !CORE_SERVICES.includes(normalize(nome)) };
-      servicos.push(item);
-      servTotal += item.faturado;
-      if (item.sva) svaTotal += item.faturado;
-    }
-    if (comandaTotal > 0) {
+  const servicos = [];
+  let svaTotal = 0; let servTotal = 0;
+  for (const r of reports.servicos || []) {
+    const nome = r.SERVICO; if (!nome || normalize(nome) === 'TOTAL') continue;
+    const item = { nome, quantidade: money(r['QUANTIDADE REALIZADO']), faturado: money(r.FATURADO), sva: !CORE_SERVICES.includes(normalize(nome)) };
+    const cat = extrasCatalog.find((n) => serviceKey(n) === serviceKey(nome));
+    if (cat) item.catalogo = cat;
+    servicos.push(item);
+    servTotal += item.faturado;
+    if (item.sva) svaTotal += item.faturado;
+  }
+
+  // ---- financeiro (comandas)
+  let financeiro = null;
+  if (comandas.length) {
+    const comandaTotal = comandas.filter((c) => c.tipo !== 'ASSINATURA').reduce((s, c) => s + c.valor, 0);
+    let svaShare = 0; let prodShare = 0;
+    if (servicos.length && comandaTotal > 0) {
       svaShare = Math.min(1, svaTotal / comandaTotal);
       prodShare = Math.max(0, Math.min(1 - svaShare, (comandaTotal - servTotal) / comandaTotal));
     }
-  }
+    // Assinaturas: nova quando a cobrança é no dia em que a assinatura foi criada; demais são recorrência
+    const created = new Map();
+    for (const r of reports.assinantes || []) { const d = brDate(r['DATA DE CRIACAO']); if (d && r.CLIENTE) created.set(normalize(r.CLIENTE), d); }
+    for (const r of reports.cancelamentos || []) { const d = brDate(r['DATA ASSINATURA']); if (d && r.CLIENTE && !created.has(normalize(r.CLIENTE))) created.set(normalize(r.CLIENTE), d); }
 
-  // Assinaturas: nova quando a cobrança é no dia em que a assinatura foi criada; demais são recorrência
-  const created = new Map();
-  for (const r of reports.assinantes || []) {
-    const d = brDate(r['DATA DE CRIACAO']);
-    if (d && r.CLIENTE) created.set(normalize(r.CLIENTE), d);
-  }
-  for (const r of reports.cancelamentos || []) {
-    const d = brDate(r['DATA ASSINATURA']);
-    if (d && r.CLIENTE && !created.has(normalize(r.CLIENTE))) created.set(normalize(r.CLIENTE), d);
-  }
+    const days = {};
+    for (let d = 1; d <= daysInMonth(y, m); d++) days[iso(y, m, d)] = { comandas: 0, novas_assinaturas: 0, recorrencia: 0 };
+    let novas = 0; let recorrentes = 0;
+    for (const c of comandas) {
+      const day = days[c.date];
+      if (c.tipo === 'ASSINATURA') {
+        if (created.get(normalize(c.cliente)) === c.date) { day.novas_assinaturas += c.valor; novas++; } else { day.recorrencia += c.valor; recorrentes++; }
+      } else day.comandas += c.valor;
+    }
+    const diario = Object.entries(days)
+      .filter(([, v]) => v.comandas || v.novas_assinaturas || v.recorrencia)
+      .map(([date, v]) => {
+        const sva = round2(v.comandas * svaShare);
+        const produtos = round2(v.comandas * prodShare);
+        return { date, servicos: round2(v.comandas - sva - produtos), produtos, sva, novas_assinaturas: round2(v.novas_assinaturas), recorrencia: round2(v.recorrencia) };
+      });
 
-  const days = {};
-  for (let d = 1; d <= daysInMonth(y, m); d++) days[iso(y, m, d)] = { comandas: 0, novas_assinaturas: 0, recorrencia: 0 };
-  let novas = 0; let recorrentes = 0;
-  for (const c of comandas) {
-    const day = days[c.date];
-    if (c.tipo === 'ASSINATURA') {
-      const isNew = reports.assinantes || reports.cancelamentos ? created.get(normalize(c.cliente)) === c.date : false;
-      if (isNew) { day.novas_assinaturas += c.valor; novas++; } else { day.recorrencia += c.valor; recorrentes++; }
-    } else day.comandas += c.valor;
-  }
-  const daily = Object.entries(days)
-    .filter(([, v]) => v.comandas || v.novas_assinaturas || v.recorrencia)
-    .map(([date, v]) => {
-      const sva = round2(v.comandas * svaShare);
-      const produtos = round2(v.comandas * prodShare);
-      return { date, servicos: round2(v.comandas - sva - produtos), produtos, sva, novas_assinaturas: round2(v.novas_assinaturas), recorrencia: round2(v.recorrencia) };
-    });
+    const byPro = new Map();
+    for (const c of comandas) {
+      if (c.tipo === 'ASSINATURA' || NOT_PROFESSIONAL.includes(normalize(c.pro))) continue;
+      const p = byPro.get(c.pro) || { nome_cashbarber: c.pro, faturamento_total: 0, atendimentos: 0, pagas: 0, clientes: new Set(), novos: new Set() };
+      p.faturamento_total += c.valor; p.atendimentos++;
+      if (c.valor > 0) p.pagas++;
+      p.clientes.add(normalize(c.cliente));
+      if (NEW_CLIENT.test(normalize(c.cliente))) p.novos.add(normalize(c.cliente));
+      byPro.set(c.pro, p);
+    }
+    const profissionais = [...byPro.values()].map((p) => ({
+      nome_cashbarber: p.nome_cashbarber, ...resolve(p.nome_cashbarber),
+      faturamento_total: round2(p.faturamento_total), clientes_atendidos: p.atendimentos, clientes_unicos: p.clientes.size,
+      geracao_demanda: p.novos.size, ticket_medio: p.pagas ? round2(p.faturamento_total / p.pagas) : 0,
+    })).sort((a, b) => b.faturamento_total - a.faturamento_total);
 
-  // Profissionais (comandas; cobranças de assinatura não têm profissional no CashBarber)
-  const existing = await db.all('SELECT * FROM professionals');
-  const byPro = new Map();
-  for (const c of comandas) {
-    if (c.tipo === 'ASSINATURA' || NOT_PROFESSIONAL.includes(normalize(c.pro))) continue;
-    const p = byPro.get(c.pro) || { nome_cashbarber: c.pro, faturamento_total: 0, atendimentos: 0, pagas: 0, clientes: new Set(), novos: new Set() };
-    p.faturamento_total += c.valor; p.atendimentos++;
-    if (c.valor > 0) p.pagas++;
-    p.clientes.add(normalize(c.cliente));
-    if (NEW_CLIENT.test(normalize(c.cliente))) p.novos.add(normalize(c.cliente));
-    byPro.set(c.pro, p);
-  }
-  const profissionais = [...byPro.values()].map((p) => {
-    const match = matchProfessional(p.nome_cashbarber, existing);
-    return {
-      nome_cashbarber: p.nome_cashbarber,
-      nome: match ? match.name : p.nome_cashbarber.split(' ')[0],
-      existente: !!match,
-      id: match?.id ?? null,
-      faturamento_total: round2(p.faturamento_total),
-      clientes_atendidos: p.atendimentos,
-      clientes_unicos: p.clientes.size,
-      geracao_demanda: p.novos.size,
-      ticket_medio: p.pagas ? round2(p.faturamento_total / p.pagas) : 0,
+    const sum = (k) => round2(diario.reduce((s, d) => s + d[k], 0));
+    financeiro = {
+      resumo: {
+        dias_com_movimento: diario.length,
+        comandas: comandas.filter((c) => c.tipo !== 'ASSINATURA').length,
+        cobrancas_assinatura: novas + recorrentes, novas_assinaturas_qtd: novas,
+        faturamento_total: round2(comandas.reduce((s, c) => s + c.valor, 0)),
+        servicos: sum('servicos'), produtos: sum('produtos'), sva: sum('sva'),
+        novas_assinaturas: sum('novas_assinaturas'), recorrencia: sum('recorrencia'),
+        sva_proporcional: servicos.length > 0,
+      },
+      diario,
+      profissionais,
     };
-  }).sort((a, b) => b.faturamento_total - a.faturamento_total);
-
-  // Quantidades de SVA do mês (o relatório de serviços não separa por profissional)
-  const extrasMes = {};
-  for (const s of servicos.filter((x) => x.sva)) {
-    const cat = extrasCatalog.find((n) => serviceKey(n) === serviceKey(s.nome));
-    extrasMes[cat || s.nome.toUpperCase()] = s.quantidade;
   }
 
-  const sum = (k) => round2(daily.reduce((s, d) => s + d[k], 0));
-  return {
-    ano: y, mes: m,
-    relatorios: Object.keys(reports), ignorados: ignored,
-    resumo: {
-      dias_com_movimento: daily.length,
-      comandas: comandas.filter((c) => c.tipo !== 'ASSINATURA').length,
-      cobrancas_assinatura: novas + recorrentes,
-      novas_assinaturas_qtd: novas,
-      faturamento_total: round2(comandas.reduce((s, c) => s + c.valor, 0)),
-      servicos: sum('servicos'), produtos: sum('produtos'), sva: sum('sva'),
-      novas_assinaturas: sum('novas_assinaturas'), recorrencia: sum('recorrencia'),
-      sva_proporcional: !!reports.servicos,
-      assinantes_ativos: reports.assinantes ? reports.assinantes.filter((r) => normalize(r.STATUS) === 'EM DIA').length : null,
-      assinantes_total: reports.assinantes ? reports.assinantes.filter((r) => r.CLIENTE).length : null,
-      cancelamentos: reports.cancelamentos ? reports.cancelamentos.filter((r) => brDate(r['DATA DE CANCELAMENTO'])?.startsWith(months[0])).length : null,
-      motivos_cancelamento: reports.cancelamentos
-        ? Object.entries(reports.cancelamentos.reduce((a, r) => { const k = r.MOTIVO || 'Não informado'; a[k] = (a[k] || 0) + 1; return a; }, {})).sort((a, b) => b[1] - a[1])
+  // ---- agenda (agendamentos): só contagens, sem dados dos clientes
+  let agenda = null;
+  if (agendamentos.length) {
+    const hoje = todayIso();
+    const blank = () => ({ total: 0, finalizados: 0, cancelados: 0, agendados: 0, futuros: 0, faltas: 0, app: 0, clube: 0 });
+    const add = (acc, a) => {
+      acc.total++;
+      if (a.status === 'FINALIZADO') acc.finalizados++;
+      else if (a.status === 'CANCELADO') acc.cancelados++;
+      else if (a.date >= hoje) acc.futuros++;
+      else acc.agendados++; // ficou como "agendado" num dia que já passou
+      if (a.cliente_status === 'FALTOU') acc.faltas++;
+      if (a.origem === 'APP') acc.app++;
+      if (a.clube) acc.clube++;
+    };
+    const totais = blank();
+    const porPro = new Map();
+    const porDia = new Map();
+    for (const a of agendamentos) {
+      add(totais, a);
+      if (!NOT_PROFESSIONAL.includes(normalize(a.pro))) {
+        if (!porPro.has(a.pro)) porPro.set(a.pro, { nome_cashbarber: a.pro, ...blank() });
+        add(porPro.get(a.pro), a);
+      }
+      if (!porDia.has(a.date)) porDia.set(a.date, { date: a.date, ...blank() });
+      add(porDia.get(a.date), a);
+    }
+    agenda = {
+      totais,
+      profissionais: [...porPro.values()].map((p) => ({ ...p, ...resolve(p.nome_cashbarber) })).sort((a, b) => b.total - a.total),
+      por_dia: [...porDia.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    };
+  }
+
+  // ---- base de assinantes e cancelamentos do mês
+  let assinaturas = null;
+  if (reports.assinantes || reports.cancelamentos) {
+    const mesIso = months[0];
+    const planos = {};
+    for (const r of reports.assinantes || []) if (r.CLIENTE && r.PLANO && normalize(r.STATUS) === 'EM DIA') planos[r.PLANO] = (planos[r.PLANO] || 0) + 1;
+    const cancelMes = (reports.cancelamentos || []).filter((r) => brDate(r['DATA DE CANCELAMENTO'])?.startsWith(mesIso));
+    assinaturas = {
+      ativos: reports.assinantes ? reports.assinantes.filter((r) => normalize(r.STATUS) === 'EM DIA').length : null,
+      inadimplentes: reports.assinantes ? reports.assinantes.filter((r) => r.CLIENTE && !['EM DIA', ''].includes(normalize(r.STATUS))).length : null,
+      novas_no_mes: reports.assinantes ? reports.assinantes.filter((r) => brDate(r['DATA DE CRIACAO'])?.startsWith(mesIso)).length : null,
+      planos: Object.entries(planos).sort((a, b) => b[1] - a[1]),
+      cancelamentos: reports.cancelamentos ? cancelMes.length : null,
+      motivos: reports.cancelamentos
+        ? Object.entries(cancelMes.reduce((acc, r) => { const k = r.MOTIVO || 'Não informado'; acc[k] = (acc[k] || 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1])
         : null,
-    },
-    servicos_mes: servicos,
-    extras_mes: extrasMes,
-    diario: daily,
-    profissionais,
+    };
+  }
+
+  return {
+    ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
+    relatorios: Object.keys(reports), ignorados: ignored,
+    equipe, financeiro, agenda, assinaturas,
+    servicos: servicos.length ? { lista: servicos, sva_total: round2(svaTotal), total: round2(servTotal) } : null,
   };
 }
 
-/** Grava o plano: substitui o faturamento diário do mês e atualiza os profissionais do relatório. */
+async function saveReport(q, y, m, kind, data) {
+  await q.run(`INSERT INTO monthly_reports(year, month, kind, data, updated_at) VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(year, month, kind) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`, y, m, kind, JSON.stringify(data));
+}
+
+/** Grava o plano. Cada relatório substitui só a parte que ele cobre. */
 async function apply(plan) {
   const { ano: y, mes: m } = plan;
   await tx(async (q) => {
-    await q.run('DELETE FROM daily_revenue WHERE date >= ? AND date <= ?', iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
-    for (const d of plan.diario) {
-      await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
-        VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)`, d.date, d.servicos, d.produtos, d.novas_assinaturas, d.sva, d.recorrencia);
-    }
-    // o relatório é a fonte da verdade do mês: quem não aparece nele sai daquele mês
-    const keep = [];
-    for (const p of plan.profissionais) {
-      let id = p.id;
-      if (!id) {
-        await q.run('INSERT INTO professionals(name, external_id) VALUES(?, ?) ON CONFLICT DO NOTHING', p.nome, p.nome_cashbarber);
-        id = (await q.get('SELECT id FROM professionals WHERE lower(name) = lower(?)', p.nome)).id;
-      } else {
-        await q.run('UPDATE professionals SET external_id = ?, active = 1 WHERE id = ?', p.nome_cashbarber, id);
+    // garante o profissional (já existente ou novo) e devolve o id
+    const ensurePro = async (p, externalId = null) => {
+      if (p.id) return p.id;
+      const found = await q.get('SELECT id FROM professionals WHERE lower(name) = lower(?)', p.nome);
+      if (found) return found.id;
+      await q.run('INSERT INTO professionals(name, external_id) VALUES(?, ?) ON CONFLICT DO NOTHING', p.nome, externalId);
+      return (await q.get('SELECT id FROM professionals WHERE lower(name) = lower(?)', p.nome)).id;
+    };
+
+    if (plan.equipe) {
+      for (const p of plan.equipe.profissionais) {
+        const id = await ensurePro(p, p.id_cashbarber);
+        await q.run('UPDATE professionals SET external_id = ?, active = ? WHERE id = ?', p.id_cashbarber, p.ativo ? 1 : 0, id);
       }
-      await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', id, y, m);
-      await q.run(`UPDATE professional_monthly SET faturamento_total = ?, clientes_atendidos = ?, geracao_demanda = ?, ticket_medio = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE professional_id = ? AND year = ? AND month = ?`, p.faturamento_total, p.clientes_atendidos, p.geracao_demanda, p.ticket_medio, id, y, m);
-      keep.push(id);
+      for (const p of plan.equipe.inativar) await q.run('UPDATE professionals SET active = 0 WHERE id = ?', p.id);
     }
-    const others = await q.all('SELECT professional_id FROM professional_monthly WHERE year = ? AND month = ?', y, m);
-    for (const o of others) {
-      if (!keep.includes(o.professional_id)) await q.run('DELETE FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?', o.professional_id, y, m);
+
+    if (plan.financeiro) {
+      await q.run('DELETE FROM daily_revenue WHERE date >= ? AND date <= ?', iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
+      for (const d of plan.financeiro.diario) {
+        await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
+          VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)`, d.date, d.servicos, d.produtos, d.novas_assinaturas, d.sva, d.recorrencia);
+      }
+      // o relatório é a fonte da verdade do mês: quem não aparece nele sai daquele mês
+      const keep = [];
+      for (const p of plan.financeiro.profissionais) {
+        const id = await ensurePro(p);
+        await q.run('UPDATE professionals SET active = 1 WHERE id = ?', id);
+        await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', id, y, m);
+        await q.run(`UPDATE professional_monthly SET faturamento_total = ?, clientes_atendidos = ?, geracao_demanda = ?, ticket_medio = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE professional_id = ? AND year = ? AND month = ?`, p.faturamento_total, p.clientes_atendidos, p.geracao_demanda, p.ticket_medio, id, y, m);
+        keep.push(id);
+      }
+      for (const o of await q.all('SELECT professional_id FROM professional_monthly WHERE year = ? AND month = ?', y, m)) {
+        if (!keep.includes(o.professional_id)) await q.run('DELETE FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?', o.professional_id, y, m);
+      }
     }
+
+    if (plan.agenda) {
+      const profissionais = [];
+      for (const p of plan.agenda.profissionais) {
+        const { nome_cashbarber, existente, id, ...counts } = p;
+        profissionais.push({ ...counts, professional_id: await ensurePro(p) });
+      }
+      await saveReport(q, y, m, 'agenda', { totais: plan.agenda.totais, profissionais, por_dia: plan.agenda.por_dia });
+    }
+    if (plan.assinaturas) await saveReport(q, y, m, 'assinaturas', plan.assinaturas);
+    if (plan.servicos) await saveReport(q, y, m, 'servicos', plan.servicos);
   });
-  return { ok: true, ano: y, mes: m, dias: plan.diario.length, profissionais: plan.profissionais.length };
+  if (plan.equipe) {
+    const dirRows = (await db.all('SELECT id, name, external_id FROM professionals')).filter((p) => p.external_id);
+    await setSetting('cashbarber_equipe', plan.equipe.profissionais.map((p) => ({ id: p.id_cashbarber, nome: p.nome_completo, tipo: 'PROFISSIONAL', ativo: p.ativo, desde: p.desde, profissional: dirRows.find((d) => d.external_id === p.id_cashbarber)?.name })));
+  }
+  return {
+    ok: true, ano: y, mes: m,
+    dias: plan.financeiro?.diario.length || 0,
+    profissionais: plan.financeiro?.profissionais.length || 0,
+    agenda: !!plan.agenda, equipe: plan.equipe?.profissionais.length || 0,
+  };
 }
 
 module.exports = { analyze, apply, parseCSV };

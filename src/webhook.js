@@ -2,6 +2,7 @@
 // O formato é flexível: aceita nomes de campos em português ou inglês e valores como "R$ 1.234,56".
 const { db, getSetting, tx } = require('./db');
 const { dashboard, round2, todayIso, todayParts } = require('./metrics');
+const { matchProfessional, displayName, directory } = require('./team');
 
 const ALIASES = {
   event: ['event', 'evento', 'type', 'tipo_evento', 'action'],
@@ -68,13 +69,12 @@ const EVENT_KIND = (e) => {
 
 async function findOrCreatePro(q, name, externalId) {
   const clean = String(name).trim();
-  let pro = externalId ? await q.get('SELECT * FROM professionals WHERE external_id = ?', String(externalId)) : null;
-  if (!pro) pro = await q.get('SELECT * FROM professionals WHERE lower(name) = lower(?)', clean);
-  if (!pro) {
-    await q.run('INSERT INTO professionals(name, external_id) VALUES(?, ?) ON CONFLICT DO NOTHING', clean, externalId ? String(externalId) : null);
-    pro = await q.get('SELECT * FROM professionals WHERE lower(name) = lower(?)', clean);
-  }
-  return pro;
+  const pros = await q.all('SELECT * FROM professionals');
+  const found = matchProfessional(clean, pros, await directory(), externalId ? String(externalId) : null);
+  if (found) return found;
+  const short = displayName(clean, pros);
+  await q.run('INSERT INTO professionals(name, external_id) VALUES(?, ?) ON CONFLICT DO NOTHING', short, externalId ? String(externalId) : null);
+  return q.get('SELECT * FROM professionals WHERE lower(name) = lower(?)', short);
 }
 
 async function ensureMonthly(q, proId, y, m) {

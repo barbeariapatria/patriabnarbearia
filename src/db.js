@@ -34,7 +34,7 @@ const normArgs = (args) => args.map((a) => (a === undefined ? null : typeof a ==
 
 // ---------------------------------------------------------------- Postgres (Supabase)
 // No Postgres as tabelas levam o prefixo "patria_" para não colidir com outras tabelas do projeto Supabase
-const TABLES = ['users', 'settings', 'daily_revenue', 'professionals', 'professional_monthly', 'webhook_events'];
+const TABLES = ['users', 'settings', 'daily_revenue', 'professionals', 'professional_monthly', 'webhook_events', 'monthly_reports'];
 const TABLE_RE = new RegExp(`\\b(${TABLES.join('|')})\\b`, 'g');
 const PG_NOW = "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')";
 
@@ -230,6 +230,15 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_ext ON webhook_events(external_id);
+-- Resumos mensais importados do CashBarber (agenda, assinaturas, serviços): só totais, sem dados de clientes
+CREATE TABLE IF NOT EXISTS monthly_reports (
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (year, month, kind)
+);
 `;
 
 // Esquema equivalente no Postgres: tabelas com prefixo, números em DOUBLE PRECISION (centavos sem perda),
@@ -297,6 +306,14 @@ CREATE TABLE IF NOT EXISTS patria_webhook_events (
   created_at TEXT DEFAULT ${PG_NOW}
 );
 CREATE INDEX IF NOT EXISTS patria_webhook_ext ON patria_webhook_events (external_id);
+CREATE TABLE IF NOT EXISTS patria_monthly_reports (
+  year INTEGER NOT NULL,
+  month INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  data TEXT NOT NULL,
+  updated_at TEXT DEFAULT ${PG_NOW},
+  PRIMARY KEY (year, month, kind)
+);
 ${TABLES.map((t) => `ALTER TABLE patria_${t} ENABLE ROW LEVEL SECURITY;`).join('\n')}
 `;
 

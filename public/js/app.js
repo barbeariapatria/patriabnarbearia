@@ -475,9 +475,10 @@
   // ============================================================ Visão geral
   async function viewOverview(view) {
     if (isRange()) return viewRangeDashboard(view);
-    const [d, ps] = await Promise.all([
+    const [d, ps, rep] = await Promise.all([
       api(`/api/dashboard?ano=${state.y}&mes=${state.m}`),
       api(`/api/profissionais/stats?ano=${state.y}&mes=${state.m}`),
+      api(`/api/relatorios?ano=${state.y}&mes=${state.m}`).catch(() => null),
     ]);
     $('#pageSub').textContent = `${d.unidade} · Apuração até dia ${d.dia_apuracao || '—'}`;
     const M = d.mensal;
@@ -548,7 +549,8 @@
         </div>
       </div>
 
-      <div class="grid g-2">${d.quinzenas.map((q, i) => quinzenaCard(q, i + 1, d.quinzena_atual === i + 1)).join('')}</div>`;
+      <div class="grid g-2">${d.quinzenas.map((q, i) => quinzenaCard(q, i + 1, d.quinzena_atual === i + 1)).join('')}</div>
+      ${reportsSection(rep)}`;
 
     animateRings(view); animateBars(view);
     $('#chgPwd', view)?.addEventListener('click', changePasswordModal);
@@ -609,7 +611,7 @@
 
   // ============================================================ Resumo de um período (modo intervalo)
   async function viewRangeDashboard(view) {
-    const [r, ps] = await Promise.all([api(`/api/periodo?${periodQS()}`), api(`/api/profissionais/stats?${periodQS()}`)]);
+    const [r, ps, rep] = await Promise.all([api(`/api/periodo?${periodQS()}`), api(`/api/profissionais/stats?${periodQS()}`), api(`/api/relatorios?${periodQS()}`).catch(() => null)]);
     $('#pageSub').textContent = `${r.unidade} · ${rangeTitle()} · ${r.dias_no_periodo} dias`;
     const byMonth = r.dias.length > 62;
     const groups = byMonth ? r.por_mes : r.dias;
@@ -679,7 +681,8 @@
           ${topPros(ps)}
           ${ps.parcial ? '<p class="muted" style="font-size:12px;margin:12px 0 0">Os números da equipe são mensais e incluem os meses inteiros que o período toca.</p>' : ''}
         </div>
-      </div>`;
+      </div>
+      ${reportsSection(rep)}`;
 
     animateBars(view);
     $('#goMonth').onclick = () => setPeriod({ mode: 'mes', y: ay, m: am });
@@ -709,6 +712,56 @@
         },
       },
     });
+  }
+
+
+  // ============================================================ Agenda, clube e serviços (relatórios importados)
+  const rate = (n, d) => (d ? pct((n / d) * 100) : '—');
+  function reportsSection(rep) {
+    if (!rep || (!rep.agenda && !rep.assinaturas && !rep.servicos)) return '';
+    const ag = rep.agenda; const as = rep.assinaturas; const sv = rep.servicos;
+    const tile = (l, v, foot = '') => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:19px;font-weight:700">${v}</div>${foot ? `<div class="muted" style="font-size:11.5px">${foot}</div>` : ''}</div>`;
+    const atendidos = ag ? ag.totais.total - ag.totais.futuros : 0;
+    const svaList = sv ? sv.lista.filter((x) => x.sva).slice(0, 8) : [];
+    const maxSva = Math.max(1, ...svaList.map((x) => x.faturado));
+    return `<div class="grid g-3">
+      ${ag ? `<div class="card fade-in"><div class="card-h"><h3>${icon('calendar')} Agenda</h3><div class="grow"></div><span class="hint">CashBarber</span></div>
+        <div class="grid g-2" style="gap:10px">
+          ${tile('Agendamentos', int(ag.totais.total), ag.totais.futuros ? `${int(ag.totais.futuros)} ainda por vir` : '')}
+          ${tile('Comparecimento', rate(ag.totais.finalizados, atendidos), `${int(ag.totais.finalizados)} finalizados`)}
+          ${tile('Cancelados', int(ag.totais.cancelados), rate(ag.totais.cancelados, ag.totais.total))}
+          ${tile('Faltas', int(ag.totais.faltas), rate(ag.totais.faltas, atendidos))}
+          ${tile('Pelo app', rate(ag.totais.app, ag.totais.total), `${int(ag.totais.app)} agendamentos`)}
+          ${tile('Assinantes (clube)', rate(ag.totais.clube, ag.totais.total), `${int(ag.totais.total - ag.totais.clube)} avulsos`)}
+        </div></div>` : ''}
+      ${as ? `<div class="card fade-in"><div class="card-h"><h3>${icon('ticket')} Clube de assinatura</h3><div class="grow"></div><span class="hint">base em ${as.referencia.nome}</span></div>
+        <div class="grid g-2" style="gap:10px">
+          ${tile('Assinantes em dia', as.ativos ?? '—', as.inadimplentes ? `${int(as.inadimplentes)} com pagamento pendente` : '')}
+          ${tile('Novas · cancelamentos', `${as.novas_no_periodo ?? '—'} · ${as.cancelamentos ?? '—'}`, as.novas_no_periodo != null && as.cancelamentos != null ? `saldo ${as.novas_no_periodo - as.cancelamentos >= 0 ? '+' : ''}${as.novas_no_periodo - as.cancelamentos}` : '')}
+        </div>
+        ${as.motivos?.length ? `<div class="eyebrow" style="margin:14px 0 8px">Motivos de cancelamento</div><div class="comp-list">${as.motivos.slice(0, 5).map(([k, n]) => `<div class="comp-item"><div class="l"><span>${esc(k)}</span><b class="num">${n}</b></div><div class="bar"><i style="width:${(n / as.motivos[0][1]) * 100}%;background:var(--accent)"></i></div></div>`).join('')}</div>` : ''}
+        ${as.planos?.length ? `<div class="eyebrow" style="margin:14px 0 8px">Planos em dia</div><div class="chips">${as.planos.slice(0, 6).map(([k, n]) => `<span class="chip">${esc(k)} · ${n}</span>`).join('')}</div>` : ''}
+      </div>` : ''}
+      ${svaList.length ? `<div class="card fade-in"><div class="card-h"><h3>${icon('spark')} Serviços adicionais (SVA)</h3><div class="grow"></div><span class="hint">${brl(sv.sva_total)}</span></div>
+        <div class="comp-list">${svaList.map((x) => `<div class="comp-item"><div class="l"><span>${esc(x.nome)} <span class="muted">· ${int(x.quantidade)}x</span></span><b class="num">${brl(x.faturado)}</b></div><div class="bar"><i style="width:${(x.faturado / maxSva) * 100}%;background:var(--s4)"></i></div></div>`).join('')}</div>
+      </div>` : ''}
+    </div>`;
+  }
+  function agendaTable(ag) {
+    if (!ag) return '';
+    const atend = (p) => p.total - p.futuros;
+    return `<div class="card fade-in">
+      <div class="card-h"><h3>Agenda por profissional</h3><div class="grow"></div><span class="hint">agendamentos do CashBarber</span></div>
+      <div class="table-wrap"><table class="t">
+        <thead><tr><th>Profissional</th><th class="r">Agendamentos</th><th class="r">Finalizados</th><th class="r">Comparecimento</th><th class="r">Cancelados</th><th class="r">Faltas</th><th class="r">Pelo app</th><th class="r">Assinantes</th><th class="r">Por vir</th></tr></thead>
+        <tbody>${ag.profissionais.map((p) => `<tr><td><span style="display:inline-flex;align-items:center;gap:8px"><i style="width:8px;height:8px;border-radius:50%;background:${proColor(p.professional_id)}"></i><b>${esc(p.nome)}</b></span></td>
+          <td class="r num">${int(p.total)}</td><td class="r num">${int(p.finalizados)}</td><td class="r num">${rate(p.finalizados, atend(p))}</td><td class="r num">${int(p.cancelados)}</td>
+          <td class="r num">${int(p.faltas)} <span class="muted">(${rate(p.faltas, atend(p))})</span></td><td class="r num">${rate(p.app, p.total)}</td><td class="r num">${rate(p.clube, p.total)}</td><td class="r num">${int(p.futuros)}</td></tr>`).join('')}</tbody>
+        <tfoot><tr><td>Total</td><td class="r num">${int(ag.totais.total)}</td><td class="r num">${int(ag.totais.finalizados)}</td><td class="r num">${rate(ag.totais.finalizados, ag.totais.total - ag.totais.futuros)}</td><td class="r num">${int(ag.totais.cancelados)}</td>
+          <td class="r num">${int(ag.totais.faltas)}</td><td class="r num">${rate(ag.totais.app, ag.totais.total)}</td><td class="r num">${rate(ag.totais.clube, ag.totais.total)}</td><td class="r num">${int(ag.totais.futuros)}</td></tr></tfoot>
+      </table></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">Comparecimento e faltas consideram só os agendamentos de dias que já passaram.</p>
+    </div>`;
   }
 
   function hexA(hex, a) {
@@ -834,6 +887,7 @@
       api(`/api/profissionais/stats?${periodQS()}`),
       api(`/api/profissionais/ano?ano=${periodYear()}`),
     ]);
+    const rep = await api(`/api/relatorios?${periodQS()}`).catch(() => null);
     const list = ps.profissionais.filter((p) => p.has_data).sort((a, b) => b.faturamento_total - a.faturamento_total);
     $('#pageSub').textContent = `${list.length} profissionais com dados em ${ps.mes_nome}${ps.parcial ? ' · dados mensais: o período inclui os meses inteiros que ele toca' : ''}`;
     if (!list.length) {
@@ -903,6 +957,8 @@
         </table></div>
         <p class="muted" style="font-size:12px;margin:10px 0 0">Valores em destaque indicam o melhor resultado da equipe no indicador.</p>
       </div>
+
+      ${agendaTable(rep?.agenda)}
 
       <div class="card fade-in">
         <div class="card-h"><h3>Serviços adicionais (SVA) por profissional</h3><div class="grow"></div><span class="hint">quantidade · cor mais intensa = mais vendas</span></div>
@@ -1363,7 +1419,7 @@
   }
 
   // ============================================================ Admin · Importar CashBarber
-  const REPORT_LABEL = { comandas: 'Comandas', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos' };
+  const REPORT_LABEL = { comandas: 'Comandas', agendamentos: 'Agendamentos', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos', equipe: 'Equipe' };
 
   async function viewAdminImport(view) {
     const { ultima } = await api('/api/admin/importar');
@@ -1386,10 +1442,12 @@
         <div class="card fade-in">
           <div class="card-h"><h3>Quais relatórios exportar</h3></div>
           <ol class="steps">
-            <li><span><b>Comandas</b> (obrigatório): ID da comanda, profissional, cliente, tipo e valor. Dá o faturamento de cada dia, de cada profissional e das assinaturas.</span></li>
+            <li><span><b>Comandas</b>: ID da comanda, profissional, cliente, tipo e valor. Dá o faturamento de cada dia, de cada profissional e das assinaturas.</span></li>
             <li><span><b>Serviços realizados</b>: separa SVA (sobrancelha, selagem, depilação…) e produtos dentro do valor das comandas.</span></li>
             <li><span><b>Assinantes</b>: identifica quais cobranças são assinaturas novas e quais são recorrência.</span></li>
             <li><span><b>Cancelamentos</b>: mostra quantos cancelaram no mês e por quê.</span></li>
+            <li><span><b>Agendamentos</b>: agenda por profissional (finalizados, cancelados, faltas, app, assinantes).</span></li>
+            <li><span><b>Usuários / equipe</b>: liga cada profissional ao ID do CashBarber.</span></li>
           </ol>
           ${ultima ? `<p class="muted" style="margin:16px 0 0;font-size:12.5px">Última importação: <b style="color:var(--text)">${MONTHS[ultima.mes - 1]}/${ultima.ano}</b> em ${new Date(ultima.em).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</p>` : ''}
         </div>
@@ -1418,37 +1476,45 @@
     };
 
     function renderPreview(plan) {
-      const r = plan.resumo; const mes = `${MONTHS[plan.mes - 1]}/${plan.ano}`;
+      const f = plan.financeiro; const r = f?.resumo; const ag = plan.agenda; const as = plan.assinaturas; const eq = plan.equipe;
+      const mes = plan.mes_nome || 'cadastro da equipe';
+      const box = (l, v) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:17px;font-weight:700">${v}</div></div>`;
       $('#preview').innerHTML = `
         <div class="card fade-in" style="border-color:color-mix(in srgb,var(--accent) 50%,var(--border))">
           <div class="card-h"><h3>Prévia · ${mes}</h3><div class="grow"></div>
-            ${plan.relatorios.map((t) => `<span class="badge good">${icon('check')}${REPORT_LABEL[t]}</span>`).join(' ')}
+            ${plan.relatorios.map((t) => `<span class="badge good">${icon('check')}${REPORT_LABEL[t] || t}</span>`).join(' ')}
             ${plan.ignorados.map((n) => `<span class="badge warn" title="Formato não reconhecido">${esc(n)}</span>`).join(' ')}</div>
-          <div class="grid g-4" style="gap:12px">
-            ${[['Faturamento total', brl(r.faturamento_total)], ['Comandas', `${int(r.comandas)} · ${brl(r.servicos + r.produtos + r.sva)}`],
-              ['Assinaturas cobradas', `${int(r.cobrancas_assinatura)} · ${brl(r.novas_assinaturas + r.recorrencia)}`], ['Novas assinaturas', `${int(r.novas_assinaturas_qtd)} · ${brl(r.novas_assinaturas)}`],
-              ['SVA', brl(r.sva)], ['Produtos', brl(r.produtos)], ['Assinantes em dia', r.assinantes_ativos ?? '—'], ['Cancelamentos no mês', r.cancelamentos ?? '—']]
-              .map(([l, v]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:17px;font-weight:700">${v}</div></div>`).join('')}
+          ${f ? `<div class="grid g-4" style="gap:12px">
+            ${box('Faturamento total', brl(r.faturamento_total))}${box('Comandas', `${int(r.comandas)} · ${brl(r.servicos + r.produtos + r.sva)}`)}
+            ${box('Assinaturas cobradas', `${int(r.cobrancas_assinatura)} · ${brl(r.novas_assinaturas + r.recorrencia)}`)}${box('Novas assinaturas', `${int(r.novas_assinaturas_qtd)} · ${brl(r.novas_assinaturas)}`)}
+            ${box('SVA', brl(r.sva))}${box('Produtos', brl(r.produtos))}${box('Assinantes em dia', as?.ativos ?? '—')}${box('Cancelamentos no mês', as?.cancelamentos ?? '—')}
           </div>
-          ${r.sva_proporcional ? `<p class="muted" style="font-size:12.5px;margin:14px 0 0">${icon('alert')} O CashBarber informa SVA e produtos só no total do mês. Por isso, a divisão de cada dia entre serviços, SVA e produtos segue a proporção do mês. O total de cada dia é exato.</p>` : ''}
-          <h4 style="font-size:14px;margin:20px 0 10px">Profissionais</h4>
+          ${r.sva_proporcional ? `<p class="muted" style="font-size:12.5px;margin:14px 0 0">${icon('alert')} O CashBarber informa SVA e produtos só no total do mês. Por isso, a divisão de cada dia entre serviços, SVA e produtos segue a proporção do mês. O total de cada dia é exato.</p>` : ''}` : ''}
+          ${ag ? `<h4 style="font-size:14px;margin:20px 0 10px">Agenda</h4><div class="grid g-4" style="gap:12px">
+            ${box('Agendamentos', int(ag.totais.total))}${box('Finalizados', `${int(ag.totais.finalizados)} · ${pct((ag.totais.finalizados / ag.totais.total) * 100)}`)}
+            ${box('Cancelados / faltas', `${int(ag.totais.cancelados)} / ${int(ag.totais.faltas)}`)}${box('Pelo app · assinantes', `${pct((ag.totais.app / ag.totais.total) * 100)} · ${pct((ag.totais.clube / ag.totais.total) * 100)}`)}
+          </div>` : ''}
+          ${eq ? `<h4 style="font-size:14px;margin:20px 0 10px">Equipe no CashBarber</h4>
+            <div class="chips">${eq.profissionais.map((p) => `<span class="chip ${p.existente ? '' : 'on'}" title="${esc(p.nome_completo)} · ID ${esc(p.id_cashbarber)}">${esc(p.nome)}${p.existente ? '' : ' · novo'}</span>`).join('')}</div>
+            ${eq.inativar.length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Não estão no cadastro do CashBarber e ficarão inativos: <b style="color:var(--text)">${eq.inativar.map((p) => esc(p.nome)).join(', ')}</b> (o histórico é mantido).</p>` : ''}
+            ${eq.outros_usuarios.length ? `<p class="muted" style="font-size:12.5px;margin:6px 0 0">Não entram como profissionais: ${eq.outros_usuarios.map(esc).join(', ')}.</p>` : ''}` : ''}
+          ${f ? `<h4 style="font-size:14px;margin:20px 0 10px">Profissionais</h4>
           <div class="table-wrap"><table class="t">
-            <thead><tr><th>No painel</th><th>No CashBarber</th><th class="r">Faturamento</th><th class="r">Atendimentos</th><th class="r">Clientes únicos</th><th class="r">Ticket (comandas pagas)</th><th class="r">Cadastros novos</th></tr></thead>
-            <tbody>${plan.profissionais.map((p) => `<tr><td><b>${esc(p.nome)}</b> ${p.existente ? '' : '<span class="badge accent" style="font-size:10.5px">novo</span>'}</td><td class="muted">${esc(p.nome_cashbarber)}</td>
-              <td class="r num">${brl(p.faturamento_total)}</td><td class="r num">${int(p.clientes_atendidos)}</td><td class="r num">${int(p.clientes_unicos)}</td><td class="r num">${brl(p.ticket_medio)}</td><td class="r num">${int(p.geracao_demanda)}</td></tr>`).join('')}</tbody>
-          </table></div>
-          ${r.motivos_cancelamento ? `<h4 style="font-size:14px;margin:20px 0 10px">Motivos de cancelamento</h4><div class="chips">${r.motivos_cancelamento.map(([k, n]) => `<span class="chip">${esc(k)} · ${n}</span>`).join('')}</div>` : ''}
-          <div class="banner" style="margin-top:20px"><div class="grow">Importar substitui o faturamento diário de <b>${mes}</b> e atualiza os números dos profissionais acima. Os demais meses não mudam.</div>
-            <button class="btn btn-primary" id="confirmImport">${icon('check')} Importar ${mes}</button></div>
+            <thead><tr><th>No painel</th><th>No CashBarber</th><th class="r">Faturamento</th><th class="r">Atendimentos</th><th class="r">Ticket (pagas)</th>${ag ? '<th class="r">Agendamentos</th><th class="r">Faltas</th>' : ''}</tr></thead>
+            <tbody>${f.profissionais.map((p) => { const a = ag?.profissionais.find((x) => x.nome_cashbarber === p.nome_cashbarber); return `<tr><td><b>${esc(p.nome)}</b> ${p.existente ? '' : '<span class="badge accent" style="font-size:10.5px">novo</span>'}</td><td class="muted">${esc(p.nome_cashbarber)}</td>
+              <td class="r num">${brl(p.faturamento_total)}</td><td class="r num">${int(p.clientes_atendidos)}</td><td class="r num">${brl(p.ticket_medio)}</td>${ag ? `<td class="r num">${a ? int(a.total) : '—'}</td><td class="r num">${a ? int(a.faltas) : '—'}</td>` : ''}</tr>`; }).join('')}</tbody>
+          </table></div>` : ''}
+          ${as?.motivos?.length ? `<h4 style="font-size:14px;margin:20px 0 10px">Motivos de cancelamento</h4><div class="chips">${as.motivos.map(([k, n]) => `<span class="chip">${esc(k)} · ${n}</span>`).join('')}</div>` : ''}
+          <div class="banner" style="margin-top:20px"><div class="grow">${f ? `Importar substitui o faturamento diário de <b>${mes}</b> e atualiza os profissionais acima. ` : ''}${ag || as || plan.servicos ? 'Agenda, assinaturas e serviços do mês são atualizados. ' : ''}${eq ? 'A equipe é ligada aos IDs do CashBarber. ' : ''}Os demais meses não mudam. Dados pessoais dos clientes não são gravados.</div>
+            <button class="btn btn-primary" id="confirmImport">${icon('check')} Importar</button></div>
         </div>`;
       $('#confirmImport').onclick = async () => {
         const b = $('#confirmImport'); b.disabled = true;
         try {
           await api('/api/admin/importar', { method: 'POST', body: { files, confirmar: true } });
-          toast(`${mes} importado`);
-          state.y = plan.ano; state.m = plan.mes;
-          try { sessionStorage.setItem('ym', JSON.stringify({ y: state.y, m: state.m })); } catch {}
-          location.hash = '#/inicio';
+          toast(`${plan.mes_nome || 'Equipe'} importado`);
+          if (plan.ano) setPeriod({ mode: 'mes', y: plan.ano, m: plan.mes });
+          location.hash = plan.ano ? '#/inicio' : '#/admin/equipe';
         } catch (e) { toast(e.message, 'err'); b.disabled = false; }
       };
     }
