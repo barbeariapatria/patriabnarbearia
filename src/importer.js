@@ -55,7 +55,8 @@ function detect(rows) {
 
 // Serviços principais (corte/barba); os demais contam como SVA (serviço de valor agregado)
 const CORE_SERVICES = ['CABELO', 'BARBA', 'CABELO E BARBA', 'PEZINHO', 'BIGODE', 'CORTE'];
-const NOT_PROFESSIONAL = ['N/A', 'RECEPCAO', ''];
+// "N/A" são cobranças de assinatura sem profissional; a Recepção entra como os profissionais
+const NOT_PROFESSIONAL = ['N/A', ''];
 const NEW_CLIENT = /NOV[OA] CADASTRO|CADASTRO NOV[OA]|CLIENTE NOV[OA]/;
 
 // Nomes do CashBarber x catálogo do painel (ex.: "Depilação de nariz" = "DEP. NARIZ")

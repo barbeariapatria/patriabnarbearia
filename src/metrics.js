@@ -90,19 +90,25 @@ async function dashboard(y, m) {
   const totals = Object.fromEntries(FIELDS.map((f) => [f, sum(f)]));
   totals.total = sum('total');
 
+  // meta do mês: a definida para este mês no admin, ou a padrão
+  const custom = (settings.metas_mes || {})[`${y}-${pad(m)}`] || {};
+  const metaMensal = Number.isFinite(custom.mensal) ? custom.mensal : settings.meta_mensal;
+  const metaQuinzenal = Number.isFinite(custom.quinzenal) ? custom.quinzenal : settings.meta_quinzenal;
+
   const quinzenaAtual = ref > 15 ? 2 : 1;
-  const q1 = periodSummary(days, 1, 15, ref, settings.meta_quinzenal, 'sva_assinaturas');
-  const q2 = periodSummary(days, 16, last, ref, settings.meta_quinzenal, 'sva_assinaturas');
+  const q1 = periodSummary(days, 1, 15, ref, metaQuinzenal, 'sva_assinaturas');
+  const q2 = periodSummary(days, 16, last, ref, metaQuinzenal, 'sva_assinaturas');
   const qTot = (q, f) => round2(days.filter((d) => d.dia >= q.inicio && d.dia <= q.termino).reduce((s, d) => s + d[f], 0));
   for (const q of [q1, q2]) { q.sva = qTot(q, 'sva'); q.assinaturas = qTot(q, 'novas_assinaturas'); q.faturamento = qTot(q, 'total'); }
 
-  const mensal = periodSummary(days, 1, last, ref, settings.meta_mensal, 'total');
-  const svaMensal = periodSummary(days, 1, last, ref, settings.meta_quinzenal * 2, 'sva_assinaturas');
+  const mensal = periodSummary(days, 1, last, ref, metaMensal, 'total');
+  const svaMensal = periodSummary(days, 1, last, ref, metaQuinzenal * 2, 'sva_assinaturas');
   const prevTotal = round2(prevDays.reduce((s, d) => s + d.total, 0));
 
   return {
     ano: y, mes: m, mes_nome: MONTHS[m - 1], unidade: settings.unidade,
     dia_apuracao: ref, quinzena_atual: quinzenaAtual,
+    metas: { mensal: metaMensal, quinzenal: metaQuinzenal, personalizada: Number.isFinite(custom.mensal) || Number.isFinite(custom.quinzenal) },
     totais: totals,
     mes_anterior: { total: prevTotal, variacao: prevTotal ? round2(((totals.total - prevTotal) / prevTotal) * 100) : null },
     mensal, sva_mensal: { media_diaria: svaMensal.media_diaria, maior_dia: svaMensal.maior_dia, menor_dia: svaMensal.menor_dia },

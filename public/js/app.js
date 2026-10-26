@@ -281,6 +281,7 @@
     { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true, period: true },
     { group: 'Administração', admin: true },
     { path: 'admin/importar', label: 'Importar CashBarber', icon: 'download', title: 'Importar relatórios do CashBarber', admin: true },
+    { path: 'admin/dados', label: 'Dados do mês', icon: 'db', title: 'Dados do mês', month: true, admin: true },
     { path: 'admin/lancamentos', label: 'Lançamentos', icon: 'edit', title: 'Lançamentos por profissional', month: true, admin: true },
     { path: 'admin/equipe', label: 'Equipe', icon: 'team', title: 'Equipe', admin: true },
     { path: 'admin/metas', label: 'Metas e configurações', icon: 'target', title: 'Metas e configurações', admin: true },
@@ -1072,7 +1073,7 @@
   async function viewAdminLanc(view) {
     const [ps, cfg] = await Promise.all([api(`/api/profissionais/stats?ano=${state.y}&mes=${state.m}`), api('/api/config/publica')]);
     $('#pageSub').textContent = 'Lançamento manual dos indicadores mensais (o webhook atualiza automaticamente)';
-    const actives = state.pros.filter((p) => p.active);
+    const actives = state.pros.filter((p) => p.active || ps.profissionais.some((x) => x.professional_id === p.id && x.has_data));
     view.innerHTML = `
       <div class="card fade-in">
         <div class="card-h"><h3>${ps.mes_nome} ${ps.ano}</h3><div class="grow"></div><a class="btn btn-sm" href="#/admin/equipe">${icon('plus')} Novo profissional</a></div>
@@ -1174,7 +1175,7 @@
     view.innerHTML = `
       <div class="grid g-2">
         <div class="card fade-in">
-          <div class="card-h"><h3>${icon('target')} Metas</h3></div>
+          <div class="card-h"><h3>${icon('target')} Meta padrão</h3></div>
           <div class="field"><label>Nome da unidade</label><input class="input" id="cfUnit" value="${esc(c.unidade)}"></div>
           <div class="form-grid">
             <div class="field"><label>Meta mensal de faturamento (R$)</label><input class="input num" id="cfMM" value="${num2(c.meta_mensal)}" inputmode="decimal"></div>
@@ -1199,12 +1200,44 @@
             <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" id="demoGen">${icon('play')} Gerar para ${MONTHS[state.m - 1]}</button><button class="btn btn-danger" id="demoClr">${icon('trash')} Remover todos os dados demo</button></div>
           </div>
         </div>
-      </div>`;
+      </div>
+      <div class="card fade-in" id="metasMes"></div>`;
+    // Metas por mês (vazio = usa a meta padrão)
+    const metasMes = { ...(c.metas_mes || {}) };
+    let metasAno = state.y;
+    const drawMetas = () => {
+      const key = (m) => `${metasAno}-${String(m).padStart(2, '0')}`;
+      $('#metasMes').innerHTML = `
+        <div class="card-h"><h3>${icon('calendar')} Metas por mês</h3><div class="grow"></div>
+          <div class="month-picker"><button class="btn btn-ghost btn-icon" id="mAnoPrev" aria-label="Ano anterior">${icon('left')}</button><div class="label" style="min-width:70px">${metasAno}</div><button class="btn btn-ghost btn-icon" id="mAnoNext" aria-label="Próximo ano">${icon('right')}</button></div></div>
+        <p class="muted" style="margin:0 0 12px;font-size:13px">Deixe em branco para usar a meta padrão (${brl(c.meta_mensal)} no mês · ${brl(c.meta_quinzenal)} na quinzena).</p>
+        <div class="table-wrap"><table class="t">
+          <thead><tr><th>Mês</th><th class="r">Meta mensal (faturamento)</th><th class="r">Meta quinzenal (SVA + assinaturas)</th></tr></thead>
+          <tbody>${MONTHS.map((nome, i) => { const v = metasMes[key(i + 1)] || {}; return `<tr><td><b>${nome}</b></td>
+            <td class="r"><input class="cell num" style="width:140px" data-meta="${key(i + 1)}" data-f="mensal" value="${v.mensal != null ? num2(v.mensal) : ''}" placeholder="${num2(c.meta_mensal)}" inputmode="decimal" aria-label="Meta mensal ${nome}"></td>
+            <td class="r"><input class="cell num" style="width:140px" data-meta="${key(i + 1)}" data-f="quinzenal" value="${v.quinzenal != null ? num2(v.quinzenal) : ''}" placeholder="${num2(c.meta_quinzenal)}" inputmode="decimal" aria-label="Meta quinzenal ${nome}"></td></tr>`; }).join('')}</tbody>
+        </table></div>
+        <button class="btn btn-primary" id="saveMetasMes" style="margin-top:14px">${icon('check')} Salvar metas de ${metasAno}</button>`;
+      $('#mAnoPrev').onclick = () => { collect(); metasAno--; drawMetas(); };
+      $('#mAnoNext').onclick = () => { collect(); metasAno++; drawMetas(); };
+      $('#saveMetasMes').onclick = async () => {
+        collect();
+        try { await api('/api/admin/config', { method: 'PUT', body: { metas_mes: metasMes } }); toast(`Metas de ${metasAno} salvas`); } catch (e) { toast(e.message, 'err'); }
+      };
+    };
+    const collect = () => {
+      $$('[data-meta]').forEach((i) => {
+        const k = i.dataset.meta; const v = i.value.trim();
+        metasMes[k] = { ...(metasMes[k] || {}) };
+        if (v === '') delete metasMes[k][i.dataset.f]; else metasMes[k][i.dataset.f] = parseBR(v);
+        if (!Object.keys(metasMes[k]).length) delete metasMes[k];
+      });
+    };
     const drawDays = () => { $('#cfDays').innerHTML = DAYS.map((d, i) => `<button class="chip ${closed.includes(i) ? 'on' : ''}" data-d="${i}">${d}</button>`).join(''); $$('#cfDays .chip').forEach((b) => b.onclick = () => { const i = Number(b.dataset.d); closed = closed.includes(i) ? closed.filter((x) => x !== i) : [...closed, i]; drawDays(); }); };
     const drawHols = () => { $('#cfHols').innerHTML = holidays.map((h) => `<span class="chip">${h.split('-').reverse().join('/')}<span class="x" data-h="${h}" role="button" aria-label="Remover">✕</span></span>`).join('') || '<span class="muted" style="font-size:12.5px">Nenhum feriado cadastrado</span>'; $$('#cfHols .x').forEach((x) => x.onclick = () => { holidays = holidays.filter((h) => h !== x.dataset.h); drawHols(); }); };
     const drawExtras = () => { $('#cfExtras').innerHTML = extras.map((h) => `<span class="chip">${esc(h)}<span class="x" data-e="${esc(h)}" role="button" aria-label="Remover">✕</span></span>`).join(''); $$('#cfExtras .x').forEach((x) => x.onclick = () => { extras = extras.filter((h) => h !== x.dataset.e); drawExtras(); saveExtras(); }); };
     const saveExtras = () => api('/api/admin/config', { method: 'PUT', body: { extras_catalog: extras } }).then(() => toast('Catálogo atualizado')).catch((e) => toast(e.message, 'err'));
-    drawDays(); drawHols(); drawExtras();
+    drawDays(); drawHols(); drawExtras(); drawMetas();
     $('#cfHolAdd').onclick = () => { const v = $('#cfHol').value; if (v && !holidays.includes(v)) { holidays.push(v); holidays.sort(); drawHols(); } };
     $('#cfExtraAdd').onclick = () => { const v = $('#cfExtra').value.trim().toUpperCase(); if (v && !extras.includes(v)) { extras.push(v); $('#cfExtra').value = ''; drawExtras(); saveExtras(); } };
     $('#cfSave').onclick = async () => {
@@ -1520,9 +1553,108 @@
     }
   }
 
+
+  // ============================================================ Admin · Dados do mês (edição manual)
+  async function viewAdminData(view) {
+    const q = `ano=${state.y}&mes=${state.m}`;
+    const [ag, as, sv] = await Promise.all(['agenda', 'assinaturas', 'servicos'].map((k) => api(`/api/admin/relatorios/${k}?${q}`)));
+    const mes = `${MONTHS[state.m - 1]} ${state.y}`;
+    $('#pageSub').textContent = 'Edite à mão o que veio do CashBarber (ou preencha sem importar)';
+    const AG = [['total', 'Agendamentos'], ['finalizados', 'Finalizados'], ['cancelados', 'Cancelados'], ['faltas', 'Faltas'], ['app', 'Pelo app'], ['clube', 'Assinantes'], ['futuros', 'Por vir']];
+    const agRows = state.pros.filter((p) => p.active || ag.data?.profissionais?.some((x) => x.professional_id === p.id)).map((p) => ({ p, d: ag.data?.profissionais?.find((x) => x.professional_id === p.id) || {} }));
+    const a = as.data || {};
+    const lines = (arr) => (arr || []).map(([k, n]) => `${k}: ${n}`).join('\n');
+    const svList = sv.data?.lista || [];
+    const inp = (attrs, val, w = 90) => `<input class="cell num" style="width:${w}px" ${attrs} value="${val ?? ''}" inputmode="decimal">`;
+
+    view.innerHTML = `
+      <div class="card fade-in">
+        <div class="card-h"><h3>${icon('calendar')} Agenda · ${mes}</h3><div class="grow"></div><span class="hint">${ag.atualizado_em ? `atualizado ${fmtDateTime(ag.atualizado_em)}` : 'sem dados'}</span></div>
+        <div class="table-wrap"><table class="t" id="agTable">
+          <thead><tr><th>Profissional</th>${AG.map(([, l]) => `<th class="r">${l}</th>`).join('')}</tr></thead>
+          <tbody>${agRows.map(({ p, d }) => `<tr data-pro="${p.id}" data-nome="${esc(p.name)}"><td><b>${esc(p.name)}</b></td>${AG.map(([k, l]) => `<td class="r">${inp(`data-k="${k}" aria-label="${l} ${esc(p.name)}"`, d[k] ?? '', 80)}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table></div>
+        <button class="btn btn-primary" id="saveAg" style="margin-top:14px">${icon('check')} Salvar agenda</button>
+      </div>
+
+      <div class="grid g-2">
+        <div class="card fade-in">
+          <div class="card-h"><h3>${icon('ticket')} Clube de assinatura · ${mes}</h3></div>
+          <div class="form-grid">
+            <div class="field"><label>Assinantes em dia</label><input class="input num" id="asAtivos" value="${a.ativos ?? ''}" inputmode="numeric"></div>
+            <div class="field"><label>Com pagamento pendente</label><input class="input num" id="asInad" value="${a.inadimplentes ?? ''}" inputmode="numeric"></div>
+            <div class="field"><label>Novas assinaturas no mês</label><input class="input num" id="asNovas" value="${a.novas_no_mes ?? ''}" inputmode="numeric"></div>
+            <div class="field"><label>Cancelamentos no mês</label><input class="input num" id="asCanc" value="${a.cancelamentos ?? ''}" inputmode="numeric"></div>
+          </div>
+          <div class="field"><label>Motivos de cancelamento (um por linha: motivo: quantidade)</label><textarea class="input" id="asMotivos" style="min-height:110px" placeholder="Financeiro: 10">${esc(lines(a.motivos))}</textarea></div>
+          <div class="field"><label>Planos em dia (um por linha: plano: quantidade)</label><textarea class="input" id="asPlanos" style="min-height:110px" placeholder="Corte ILIMITADO: 165">${esc(lines(a.planos))}</textarea></div>
+          <button class="btn btn-primary" id="saveAs">${icon('check')} Salvar clube</button>
+        </div>
+        <div class="card fade-in">
+          <div class="card-h"><h3>${icon('spark')} Serviços do mês · ${mes}</h3><div class="grow"></div><button class="btn btn-sm" id="addSv">${icon('plus')} Serviço</button></div>
+          <div class="table-wrap"><table class="t" id="svTable">
+            <thead><tr><th>Serviço</th><th class="r">Qtd.</th><th class="r">Faturado (R$)</th><th>SVA</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table></div>
+          <button class="btn btn-primary" id="saveSv" style="margin-top:14px">${icon('check')} Salvar serviços</button>
+        </div>
+      </div>
+
+      <div class="card fade-in" style="border-color:color-mix(in srgb,var(--bad) 45%,var(--border))">
+        <div class="card-h"><h3>${icon('trash')} Apagar dados de ${mes}</h3></div>
+        <p class="muted" style="margin:0 0 14px;font-size:13px">Use para refazer um mês do zero (por exemplo, antes de importar de novo). Não afeta os outros meses.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-danger" data-del="diario">Faturamento diário</button>
+          <button class="btn btn-danger" data-del="profissionais">Números dos profissionais</button>
+          <button class="btn btn-danger" data-del="relatorios">Agenda, clube e serviços</button>
+          <button class="btn btn-danger" data-del="diario,profissionais,relatorios">Tudo do mês</button>
+        </div>
+      </div>`;
+
+    const svBody = $('#svTable tbody');
+    const svRow = (x = {}) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input class="input input-sm" data-k="nome" value="${esc(x.nome || '')}" placeholder="Nome do serviço" aria-label="Serviço"></td>
+        <td class="r">${inp('data-k="quantidade" aria-label="Quantidade"', x.quantidade ?? '', 60)}</td>
+        <td class="r">${inp('data-k="faturado" aria-label="Faturado"', x.faturado != null ? num2(x.faturado) : '', 100)}</td>
+        <td><input type="checkbox" data-k="sva" ${x.sva !== false ? 'checked' : ''} aria-label="É SVA"></td>
+        <td class="r"><button class="btn btn-sm btn-danger" data-rm aria-label="Remover">${icon('x')}</button></td>`;
+      $('[data-rm]', tr).onclick = () => tr.remove();
+      svBody.appendChild(tr);
+    };
+    svList.forEach(svRow);
+    if (!svList.length) svRow({ sva: true });
+    $('#addSv').onclick = () => svRow({ sva: true });
+
+    const save = async (kind, data, label) => {
+      try { await api(`/api/admin/relatorios/${kind}`, { method: 'PUT', body: { ano: state.y, mes: state.m, data } }); toast(`${label} salvo`); } catch (e) { toast(e.message, 'err'); }
+    };
+    $('#saveAg').onclick = () => {
+      const profissionais = $$('#agTable tbody tr').map((tr) => {
+        const o = { professional_id: Number(tr.dataset.pro), nome: tr.dataset.nome };
+        $$('[data-k]', tr).forEach((i) => { o[i.dataset.k] = parseBR(i.value); });
+        return o;
+      }).filter((o) => AG.some(([k]) => o[k] > 0));
+      save('agenda', { profissionais, por_dia: ag.data?.por_dia || [] }, 'Agenda');
+    };
+    const parseLines = (txt) => txt.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const i = l.lastIndexOf(':'); return i > 0 ? [l.slice(0, i).trim(), parseBR(l.slice(i + 1))] : [l, 0]; });
+    $('#saveAs').onclick = () => save('assinaturas', {
+      ativos: $('#asAtivos').value, inadimplentes: $('#asInad').value, novas_no_mes: $('#asNovas').value, cancelamentos: $('#asCanc').value,
+      motivos: parseLines($('#asMotivos').value), planos: parseLines($('#asPlanos').value),
+    }, 'Clube');
+    $('#saveSv').onclick = () => save('servicos', {
+      lista: $$('#svTable tbody tr').map((tr) => ({ nome: $('[data-k="nome"]', tr).value, quantidade: parseBR($('[data-k="quantidade"]', tr).value), faturado: parseBR($('[data-k="faturado"]', tr).value), sva: $('[data-k="sva"]', tr).checked })).filter((x) => x.nome.trim()),
+    }, 'Serviços');
+    $$('[data-del]', view).forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmDialog(`Apagar <b>${esc(b.textContent)}</b> de ${mes}? Não dá para desfazer.`, { ok: 'Apagar' }))) return;
+      try { await api(`/api/admin/mes?${q}&partes=${b.dataset.del}`, { method: 'DELETE' }); toast('Dados apagados'); route(); } catch (e) { toast(e.message, 'err'); }
+    }));
+  }
+
   const VIEWS = {
     inicio: viewHome,
     'admin/importar': viewAdminImport,
+    'admin/dados': viewAdminData,
     'visao-geral': viewOverview,
     faturamento: viewDaily,
     profissionais: viewPros,

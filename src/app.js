@@ -210,6 +210,18 @@ app.put('/api/admin/config', auth.requireAdmin, wrap(async (req) => {
   if (Array.isArray(b.dias_fechados)) await setSetting('dias_fechados', b.dias_fechados.map(Number).filter((n) => n >= 0 && n <= 6));
   if (Array.isArray(b.feriados)) await setSetting('feriados', b.feriados.map((d) => webhook.toDate(d)));
   if (Array.isArray(b.extras_catalog)) await setSetting('extras_catalog', b.extras_catalog.map((s) => String(s).trim().toUpperCase()).filter(Boolean));
+  if (b.metas_mes && typeof b.metas_mes === 'object') {
+    // { "2026-10": { mensal: 30000, quinzenal: 15000 } } — vazio volta para a meta padrão
+    const clean = {};
+    for (const [k, v] of Object.entries(b.metas_mes)) {
+      if (!/^\d{4}-\d{2}$/.test(k) || !v) continue;
+      const item = {};
+      if (v.mensal !== '' && v.mensal != null) item.mensal = webhook.toNumber(v.mensal);
+      if (v.quinzenal !== '' && v.quinzenal != null) item.quinzenal = webhook.toNumber(v.quinzenal);
+      if (Object.keys(item).length) clean[k] = item;
+    }
+    await setSetting('metas_mes', clean);
+  }
   if (b.outgoing_webhook_url !== undefined) {
     const u = String(b.outgoing_webhook_url).trim();
     if (u && !/^https?:\/\//i.test(u)) throw new Error('URL de saída deve começar com http:// ou https://');
@@ -287,6 +299,52 @@ app.post('/api/admin/webhook/testar', auth.requireAdmin, wrap(async (req) => {
   if (simular === false) await webhook.notifyOutgoing('teste_admin');
   return { simulado: simular !== false, results };
 }));
+// ---------------------------------------------------------------- Admin: dados mensais editáveis (agenda, clube, serviços)
+const REPORT_KINDS = ['agenda', 'assinaturas', 'servicos'];
+app.get('/api/admin/relatorios/:kind', auth.requireAdmin, wrap(async (req) => {
+  if (!REPORT_KINDS.includes(req.params.kind)) throw new Error('Tipo de relatório inválido');
+  const { y, m } = ym(req.query);
+  const row = await db.get('SELECT data, updated_at FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, req.params.kind);
+  return { ano: y, mes: m, data: row ? JSON.parse(row.data) : null, atualizado_em: row?.updated_at || null };
+}));
+app.put('/api/admin/relatorios/:kind', auth.requireAdmin, wrap(async (req) => {
+  const kind = req.params.kind;
+  if (!REPORT_KINDS.includes(kind)) throw new Error('Tipo de relatório inválido');
+  const { y, m } = ym(req.body || {});
+  const data = req.body?.data;
+  if (!data || typeof data !== 'object') throw new Error('Dados inválidos');
+  const n = (v) => Math.max(0, webhook.toNumber(v));
+  if (kind === 'agenda') {
+    const keys = ['total', 'finalizados', 'cancelados', 'agendados', 'futuros', 'faltas', 'app', 'clube'];
+    data.profissionais = (data.profissionais || []).filter((p) => p.professional_id).map((p) => ({ professional_id: Number(p.professional_id), nome: p.nome, ...Object.fromEntries(keys.map((k) => [k, n(p[k])])) }));
+    data.totais = Object.fromEntries(keys.map((k) => [k, data.profissionais.reduce((a, p) => a + p[k], 0)]));
+    data.por_dia = Array.isArray(data.por_dia) ? data.por_dia : [];
+  } else if (kind === 'assinaturas') {
+    for (const k of ['ativos', 'inadimplentes', 'novas_no_mes', 'cancelamentos']) data[k] = data[k] === '' || data[k] == null ? null : n(data[k]);
+    data.motivos = (data.motivos || []).filter((x) => x[0]).map(([k, v]) => [String(k).trim(), n(v)]);
+    data.planos = (data.planos || []).filter((x) => x[0]).map(([k, v]) => [String(k).trim(), n(v)]);
+  } else {
+    data.lista = (data.lista || []).filter((x) => x.nome).map((x) => ({ nome: String(x.nome).trim(), quantidade: n(x.quantidade), faturado: n(x.faturado), sva: !!x.sva }));
+    data.sva_total = data.lista.filter((x) => x.sva).reduce((a, x) => a + x.faturado, 0);
+    data.total = data.lista.reduce((a, x) => a + x.faturado, 0);
+  }
+  await db.run(`INSERT INTO monthly_reports(year, month, kind, data, updated_at) VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(year, month, kind) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`, y, m, kind, JSON.stringify(data));
+  return { ok: true };
+}));
+// Apaga dados de um mês: partes = diario, profissionais, relatorios (separadas por vírgula)
+app.delete('/api/admin/mes', auth.requireAdmin, wrap(async (req) => {
+  const { y, m } = ym(req.query);
+  const partes = String(req.query.partes || '').split(',');
+  const last = metrics.daysInMonth(y, m);
+  await tx(async (q) => {
+    if (partes.includes('diario')) await q.run('DELETE FROM daily_revenue WHERE date >= ? AND date <= ?', metrics.iso(y, m, 1), metrics.iso(y, m, last));
+    if (partes.includes('profissionais')) await q.run('DELETE FROM professional_monthly WHERE year = ? AND month = ?', y, m);
+    if (partes.includes('relatorios')) await q.run('DELETE FROM monthly_reports WHERE year = ? AND month = ?', y, m);
+  });
+  return { ok: true };
+}));
+
 // Importação dos relatórios CSV do CashBarber: sem "confirmar" só analisa; com "confirmar" grava
 app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
   const files = Array.isArray(req.body?.files) ? req.body.files.filter((f) => f && typeof f.text === 'string') : [];
