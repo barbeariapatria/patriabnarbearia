@@ -60,21 +60,45 @@ async function entrar(page) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   const campoSenha = page.locator('input[type="password"]:visible').first();
   await campoSenha.waitFor({ timeout: 30000 }).catch(() => { throw new Error('Não achei a tela de login do CashBarber.'); });
-  const campoEmail = page.locator([
+  // procura o campo de e-mail e o botão dentro do mesmo formulário da senha
+  const form = page.locator('form').filter({ has: campoSenha }).first();
+  const escopo = (await form.count()) ? form : page;
+  const campoEmail = escopo.locator([
     'input[type="email"]:visible', 'input[name*="mail" i]:visible', 'input[id*="mail" i]:visible',
-    'input[name*="login" i]:visible', 'input[name*="usuario" i]:visible', 'input[type="text"]:visible',
+    'input[name*="login" i]:visible', 'input[name*="usuario" i]:visible', 'input[name*="user" i]:visible', 'input[type="text"]:visible',
   ].join(', ')).first();
-  await campoEmail.fill(email);
-  await campoSenha.fill(senha);
-  const botao = page.locator('button[type="submit"]:visible, input[type="submit"]:visible')
-    .or(page.getByRole('button', { name: /entrar|acessar|login|logar/i })).first();
-  await Promise.all([
-    page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {}),
-    (await botao.count()) ? botao.click() : campoSenha.press('Enter'),
-  ]);
-  await page.waitForTimeout(2000);
+  await campoEmail.click();
+  await campoEmail.fill('');
+  await campoEmail.pressSequentially(email.trim(), { delay: 20 });
+  await campoSenha.click();
+  await campoSenha.fill('');
+  await campoSenha.pressSequentially(senha, { delay: 20 });
+  const botao = escopo.locator('button[type="submit"]:visible, input[type="submit"]:visible')
+    .or(escopo.getByRole('button', { name: /entrar|acessar|login|logar/i })).first();
+  if (await botao.count()) await botao.click(); else await campoSenha.press('Enter');
+  // espera sair da tela de login (até 25 s)
+  await page.waitForFunction(() => ![...document.querySelectorAll('input[type="password"]')]
+    .some((e) => e.offsetWidth || e.offsetHeight), null, { timeout: 25000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
   const aindaNoLogin = await page.locator('input[type="password"]:visible').count();
   const texto = norm(await page.locator('body').innerText().catch(() => ''));
+  if (aindaNoLogin) {
+    // diagnóstico sem dados pessoais: endereço, campos do formulário e mensagens de aviso da tela
+    const diag = await page.evaluate(() => {
+      const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      return {
+        campos: [...document.querySelectorAll('input')].filter(vis).map((e) => `${e.type}:${e.name || e.id || '?'}`),
+        botoes: [...document.querySelectorAll('button, input[type="submit"]')].filter(vis).map((e) => (e.innerText || e.value || '').trim()).filter(Boolean),
+        avisos: [...document.querySelectorAll('.alert, .error, .erro, .invalid-feedback, .text-danger, .help-block, [role="alert"], .toast, .swal2-popup, .notification')]
+          .filter(vis).map((e) => e.innerText.trim()).filter(Boolean).slice(0, 5),
+        textoDoFormulario: (document.querySelector('input[type="password"]')?.closest('form, .card, .login, main, body')?.innerText || '')
+          .split('\n').map((t) => t.trim()).filter((t) => t && t.length < 100).slice(0, 8),
+      };
+    });
+    log(`Tela de login: ${new URL(page.url()).pathname} · campos ${diag.campos.join(', ')} · botões ${diag.botoes.join(', ')}`);
+    if (!diag.avisos.length) diag.avisos = diag.textoDoFormulario;
+    log(`Aviso do CashBarber: ${diag.avisos.join(' | ').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[e-mail]') || '(nenhuma mensagem visível)'}`);
+  }
   if (/captcha|nao sou um robo|recaptcha/.test(texto) || await page.locator('iframe[src*="captcha"]').count()) {
     throw new Error('O CashBarber pediu captcha no login. O robô não resolve captcha; use a importação manual.');
   }
