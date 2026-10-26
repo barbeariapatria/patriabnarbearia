@@ -19,7 +19,8 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const SAIDA = process.env.SAIDA || path.join(DIR, 'saida');
 const BASE = (process.env.CASHBARBER_URL || 'https://painel.cashbarber.com.br').replace(/\/+$/, '');
 const MODO = (process.env.MODO || 'sincronizar').toLowerCase();
-const CONFIG = JSON.parse(fs.readFileSync(path.join(DIR, 'relatorios.json'), 'utf8')).relatorios;
+const CONF = JSON.parse(fs.readFileSync(path.join(DIR, 'relatorios.json'), 'utf8'));
+const PAGINAS = CONF.paginas; const OBRIGATORIOS = CONF.obrigatorios || ['comandas'];
 const TZ = 'America/Sao_Paulo';
 
 fs.mkdirSync(SAIDA, { recursive: true });
@@ -45,8 +46,12 @@ function mesesParaImportar() {
   return lista;
 }
 function periodo({ ano, mes }) {
-  const ultimo = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  const h = hojeBrasilia();
+  const corrente = h.ano === ano && h.mes === mes;
+  const anterior = (h.mes === 1 ? h.ano - 1 === ano && mes === 12 : h.ano === ano && h.mes - 1 === mes);
+  const ultimo = corrente ? h.dia : new Date(Date.UTC(ano, mes, 0)).getUTCDate(); // o CashBarber não aceita data futura
   return {
+    atalho: corrente ? 'Mês atual' : anterior ? 'Mês passado' : null,
     deIso: `${ano}-${pad(mes)}-01`, ateIso: `${ano}-${pad(mes)}-${pad(ultimo)}`,
     deBr: `01/${pad(mes)}/${ano}`, ateBr: `${pad(ultimo)}/${pad(mes)}/${ano}`,
   };
@@ -132,7 +137,7 @@ async function tituloDaPagina(page) {
 }
 
 // links de relatório: pelo endereço (relatorio…) ou pelo texto (nome de um dos relatórios da configuração)
-const NOMES = [...new Set(CONFIG.flatMap((c) => c.nomes).map(norm))];
+const NOMES = [];
 async function linksDeRelatorio(page) {
   const links = await page.evaluate(() => [...document.querySelectorAll('a[href]')]
     .map((a) => ({ href: a.getAttribute('href'), texto: (a.innerText || a.textContent || a.title || '').replace(/\s+/g, ' ').trim() }))
@@ -177,29 +182,6 @@ async function catalogo(page) {
   return lista;
 }
 
-// liga cada relatório da configuração a uma página (pela URL fixa ou pelo nome)
-function casar(config, paginas) {
-  const pares = [];
-  for (const c of config) {
-    if (c.url) { pares.push({ chave: c.chave, url: c.url, score: 1e9 }); continue; }
-    for (const p of paginas) {
-      const textos = [...p.nomes, ...p.titulo.split(' | ')].map(norm).filter(Boolean);
-      let melhor = 0;
-      for (const nome of c.nomes.map(norm)) {
-        for (const t of textos) {
-          if (t === nome || t === `relatorio de ${nome}`) melhor = Math.max(melhor, 1000 + nome.length);
-          else if (new RegExp(`\\b${nome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(t)) melhor = Math.max(melhor, nome.length * 10 - t.length);
-        }
-      }
-      if (melhor > 0) pares.push({ chave: c.chave, url: p.url, score: melhor });
-    }
-  }
-  pares.sort((a, b) => b.score - a.score);
-  const mapa = {}; const usadas = new Set();
-  for (const p of pares) if (!mapa[p.chave] && !usadas.has(p.url)) { mapa[p.chave] = p.url; usadas.add(p.url); }
-  return mapa;
-}
-
 // ---------------------------------------------------------------- filtro de datas
 // preenche os campos de data visíveis (na tela ou na janela do filtro); devolve como fez ou null
 async function preencherDatas(page, per) {
@@ -227,6 +209,14 @@ async function preencherDatas(page, per) {
 
 // No CashBarber: clicar no filtro de data, escolher o período e, na janela que abre, baixar o CSV.
 async function definirPeriodo(page, per) {
+  if (per.atalho) {
+    const b = (await clicaveis(page)).find((c) => norm(c.texto) === norm(per.atalho));
+    if (b) {
+      await alvo(page, b.i).click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      return `atalho "${per.atalho}"`;
+    }
+  }
   let feito = await preencherDatas(page, per);
   if (!feito) {
     // abre o filtro de data (botão com "filtro", "data", "período" ou com uma data escrita)
@@ -250,6 +240,23 @@ async function definirPeriodo(page, per) {
   await page.keyboard.press('Tab').catch(() => {}); // fecha o calendário sem fechar a janela do filtro
   await page.waitForTimeout(500);
   return feito;
+}
+
+// lê e fecha o aviso do CashBarber (SweetAlert), se houver; devolve o texto (e-mails mascarados)
+async function lerAviso(page) {
+  const pop = page.locator('.swal2-popup:visible').first();
+  if (!(await pop.count())) return null;
+  const texto = (await pop.locator('.swal2-title, .swal2-html-container, .swal2-content').allInnerTexts().catch(() => []))
+    .join(' — ').replace(/\s+/g, ' ').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[e-mail]').trim().slice(0, 200);
+  const ok = pop.locator('.swal2-confirm:visible').first();
+  if (/csv|export|baixar|download|planilha/i.test(texto) && (await ok.count())) {
+    const d = await tentarDownload(page, ok);
+    if (d) return { texto, download: await salvarDownload(d) };
+  }
+  if ((await ok.count()) && /^\s*ok\s*$/i.test(await ok.innerText().catch(() => ''))) await ok.click().catch(() => {});
+  else await page.keyboard.press('Escape').catch(() => {});
+  await page.waitForTimeout(500);
+  return { texto };
 }
 
 // botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
@@ -288,7 +295,7 @@ async function clicaveis(page) {
   });
 }
 const RE_EXPORT = /exportar|export|csv|excel|xlsx|\bxls\b|planilha|baixar|download|file-?(csv|excel|export|download|arrow)|sheet/i;
-const RE_PERIGO = /importar|excluir|apagar|deletar|remover|cancelar|enviar|trash|delete|lixeira|editar|\bedit\b|salvar|novo|adicionar|\bplus\b/i;
+const RE_PERIGO = /sair|logout|importar|excluir|apagar|deletar|remover|cancelar|enviar|trash|delete|lixeira|editar|\bedit\b|salvar|novo|adicionar|\bplus\b/i;
 const alvo = (page, i) => page.locator(`[data-robo-idx="${i}"]`).first();
 
 async function tentarDownload(page, el, ms = 12000) {
@@ -307,6 +314,7 @@ async function salvarDownload(d) {
 }
 
 async function exportar(page, { tabela = true } = {}) {
+  let primeiro = null;
   const lista = (await clicaveis(page)).filter((c) => RE_EXPORT.test(c.desc) && !RE_PERIGO.test(c.desc))
     .map((c) => ({ ...c, peso: /csv/i.test(c.desc) ? 2 : /excel|xls|sheet/i.test(c.desc) ? 1 : 0 }))
     .sort((a, b) => b.peso - a.peso);
@@ -321,12 +329,17 @@ async function exportar(page, { tabela = true } = {}) {
         if (o) { d = await tentarDownload(page, alvo(page, o.i)); if (d) break; }
       }
     }
-    if (d) return salvarDownload(d);
+    if (d) {
+      const ex = await salvarDownload(d);
+      if (tipoDoCsv(ex.csv)) return ex;
+      primeiro ||= ex; // baixou, mas não é um formato que o painel conhece: tenta os outros botões
+    }
   }
+  if (primeiro) return primeiro;
   // último recurso: ler a maior tabela da tela
   if (!tabela) return null;
   const csv = await tabelaDaTela(page);
-  return csv ? { origem: 'tabela da tela', arquivo: 'tabela.csv', csv } : null;
+  return csv && tipoDoCsv(csv) ? { origem: 'tabela da tela', arquivo: 'tabela.csv', csv } : null;
 }
 
 // abre o filtro pelo botão da área do relatório (muitas vezes só um ícone de funil) e preenche as datas na janela
@@ -377,6 +390,20 @@ async function paraCsv(buf, nome) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { return new TextDecoder('windows-1252').decode(buf); }
 }
 
+// tipo do relatório pelas colunas — mesma regra de detect() em src/importer.js
+function tipoDoCsv(csv) {
+  const linha = (String(csv).replace(/^\uFEFF/, '').split(/\r?\n/).find((l) => l.trim()) || '');
+  const k = linha.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/)
+    .map((c) => c.replace(/"/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[.\-_]/g, ' ').replace(/\s+/g, ' ').trim());
+  if (k.includes('ID DA COMANDA')) return 'comandas';
+  if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
+  if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
+  if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
+  if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
+  if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
+  return null;
+}
+
 // cabeçalho e nº de linhas, só para o log (sem dados)
 function resumoCsv(csv) {
   const linhas = csv.split(/\r?\n/).filter((l) => l.trim());
@@ -423,19 +450,9 @@ async function main() {
   const relatorioFinal = { quando: new Date().toISOString(), modo: MODO, meses: [], erros: [] };
   try {
     await entrar(page);
-    const precisaDescobrir = MODO === 'mapear' || CONFIG.some((c) => !c.url);
-    const paginas = precisaDescobrir ? await catalogo(page) : [];
-    const mapa = casar(CONFIG, paginas);
-    for (const c of CONFIG) log(`  ${c.chave.padEnd(14)} → ${mapa[c.chave] || 'NÃO ENCONTRADO'}`);
-
     if (MODO === 'mapear') {
-      const detalhes = {};
-      for (const [chave, url] of Object.entries(mapa)) {
-        await page.goto(BASE + url, { waitUntil: 'domcontentloaded' });
-        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-        detalhes[chave] = { url, titulo: await tituloDaPagina(page), ...(await estrutura(page)) };
-      }
-      fs.writeFileSync(path.join(SAIDA, 'mapa.json'), JSON.stringify({ base: BASE, paginas, escolhidos: mapa, detalhes }, null, 2));
+      const paginas = await catalogo(page);
+      fs.writeFileSync(path.join(SAIDA, 'mapa.json'), JSON.stringify({ base: BASE, paginas }, null, 2));
       log('Mapa salvo em mapa.json (só estrutura das páginas, sem dados).');
       return;
     }
@@ -443,52 +460,50 @@ async function main() {
     for (const mes of mesesParaImportar()) {
       const per = periodo(mes);
       log(`== ${pad(mes.mes)}/${mes.ano} (${per.deBr} a ${per.ateBr})`);
-      const files = []; const resumo = { mes: `${mes.ano}-${pad(mes.mes)}`, relatorios: {} };
-      for (const c of CONFIG) {
-        const url = mapa[c.chave];
-        if (!url) {
-          resumo.relatorios[c.chave] = 'página não encontrada';
-          log(`  ${c.chave}: ERRO — página não encontrada`);
-          if (c.obrigatorio) relatorioFinal.erros.push(`${resumo.mes} ${c.chave}: página do relatório não encontrada`);
-          continue;
-        }
+      const porTipo = {}; const resumo = { mes: `${mes.ano}-${pad(mes.mes)}`, relatorios: {} };
+      for (const pg of PAGINAS) {
+        const nome = pg.nome || pg.url;
         try {
-          await page.goto(BASE + url, { waitUntil: 'domcontentloaded' });
+          await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' });
           await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-          if (c.periodo) {
+          let ex = null;
+          if (pg.periodo) {
             const como = await definirPeriodo(page, per);
             if (!como) throw new Error('não achei o filtro de datas');
-            log(`  ${c.chave}: período por ${como}`);
+            // no CashBarber o arquivo só sai depois de clicar em Filtrar
+            const filtrou = await aplicarFiltro(page);
+            log(`  ${nome}: período por ${como}${filtrou ? ' + Filtrar' : ''}`);
+            const aviso = await lerAviso(page);
+            if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex = aviso.download || null; }
           }
-          // primeiro tenta baixar direto (CSV na janela do filtro); se não der, aplica o filtro e tenta de novo
-          let ex = c.periodo ? await exportar(page, { tabela: false }) : null;
-          if (!ex && c.periodo) {
-            const como = await abrirFiltro(page, per);
-            if (como) { log(`  ${c.chave}: ${como}`); ex = await exportar(page, { tabela: false }); }
-          }
-          if (!ex) { if (c.periodo) await aplicarFiltro(page); ex = await exportar(page); }
+          ex ||= await exportar(page);
           if (!ex || !ex.csv?.trim()) {
+            const aviso = await lerAviso(page);
             const lista = (await clicaveis(page)).map((x) => `[${x.desc}]`).slice(0, 25);
-            throw new Error(`não consegui exportar · botões do relatório: ${lista.join(' ') || '(nenhum)'}`);
+            throw new Error(`não consegui exportar${aviso?.texto ? ` · aviso: "${aviso.texto}"` : ''} · botões do relatório: ${lista.join(' ') || '(nenhum)'}`);
           }
-          log(`  ${c.chave}: ${ex.origem} (${ex.arquivo}) · ${resumoCsv(ex.csv)}`);
-          files.push({ name: `${c.chave}.csv`, text: ex.csv });
-          resumo.relatorios[c.chave] = `ok · ${ex.origem}`;
+          const tipo = tipoDoCsv(ex.csv);
+          log(`  ${nome}: ${ex.origem} (${ex.arquivo}) → ${tipo || 'formato não usado pelo painel'} · ${resumoCsv(ex.csv)}`);
+          resumo.relatorios[nome] = tipo || 'não reconhecido';
+          if (tipo && !porTipo[tipo]) porTipo[tipo] = { name: `${tipo}.csv`, text: ex.csv };
         } catch (e) {
-          resumo.relatorios[c.chave] = `erro: ${e.message}`;
-          log(`  ${c.chave}: ERRO — ${e.message}`);
-          if (c.obrigatorio) relatorioFinal.erros.push(`${resumo.mes} ${c.chave}: ${e.message}`);
+          resumo.relatorios[nome] = `erro: ${e.message.slice(0, 300)}`;
+          log(`  ${nome}: ERRO — ${e.message}`);
         }
       }
-      const faltaObrigatorio = CONFIG.some((c) => c.obrigatorio && !files.find((f) => f.name === `${c.chave}.csv`));
-      if (MODO === 'testar') resumo.envio = 'modo testar: nada enviado';
-      else if (faltaObrigatorio) {
-        resumo.envio = 'não enviado: faltou relatório obrigatório';
-        log('  NADA FOI ENVIADO AO PAINEL: sem o relatório de Comandas o robô não atualiza (para não gravar dados pela metade).');
-      }
-      else if (files.length) {
+      const tipos = Object.keys(porTipo);
+      log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
+      const faltam = OBRIGATORIOS.filter((t) => !porTipo[t]);
+      if (faltam.length) {
+        relatorioFinal.erros.push(`${resumo.mes}: faltou o relatório de ${faltam.join(', ')}`);
+        resumo.envio = 'não enviado';
+        log(`  NADA FOI ENVIADO AO PAINEL: faltou ${faltam.join(', ')} (o robô não grava dados pela metade).`);
+      } else if (MODO === 'testar') {
+        resumo.envio = 'modo testar: nada enviado';
+        log('  Modo testar: tudo pronto, nada enviado.');
+      } else {
         try {
-          const r = await enviar(mes, files);
+          const r = await enviar(mes, Object.values(porTipo));
           resumo.envio = { reconhecidos: r.relatorios, ignorados: r.ignorados };
           log(`  Painel importou: ${(r.relatorios || []).join(', ')}${r.ignorados?.length ? ` · ignorados: ${r.ignorados.join(', ')}` : ''}`);
         } catch (e) { resumo.envio = `erro: ${e.message}`; relatorioFinal.erros.push(`${resumo.mes} envio: ${e.message}`); log(`  ENVIO FALHOU — ${e.message}`); }

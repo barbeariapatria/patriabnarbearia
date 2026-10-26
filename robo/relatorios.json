@@ -1,12 +1,17 @@
 {
-  "_leia": "Relatórios que o robô exporta do CashBarber. 'url' vazio = o robô procura a página pelo nome nos menus de relatório. Depois de rodar o modo 'mapear', preencha 'url' (ex.: /relatorio/relatorio3) para fixar cada um. 'periodo': false = relatório sem filtro de datas.",
-  "relatorios": [
-    { "chave": "comandas",      "obrigatorio": true,  "url": "", "periodo": true,  "nomes": ["comandas", "fechamento de comandas", "fechamento"] },
-    { "chave": "agendamentos",  "obrigatorio": false, "url": "", "periodo": true,  "nomes": ["agendamentos", "agenda"] },
-    { "chave": "servicos",      "obrigatorio": false, "url": "", "periodo": true,  "nomes": ["serviços realizados", "servicos realizados", "serviços"] },
-    { "chave": "assinantes",    "obrigatorio": false, "url": "", "periodo": false, "nomes": ["assinantes", "assinaturas"] },
-    { "chave": "cancelamentos", "obrigatorio": false, "url": "", "periodo": true,  "nomes": ["cancelamentos de assinatura", "cancelamentos", "assinaturas canceladas"] },
-    { "chave": "equipe",        "obrigatorio": false, "url": "/usuario", "periodo": false, "nomes": ["usuários", "usuarios", "equipe", "profissionais"] },
-    { "chave": "relatorio15",   "obrigatorio": false, "url": "/relatorio/relatorio15", "periodo": true, "nomes": [] }
+  "_leia": "Páginas do CashBarber que o robô abre e exporta. Em cada uma: escolhe o período (atalho 'Mês atual'/'Mês passado' ou datas), clica em Filtrar e baixa o CSV. O tipo de cada arquivo (comandas, agendamentos, serviços, assinantes, cancelamentos, equipe) é reconhecido pelas colunas, igual ao painel; arquivos não reconhecidos não são enviados. Sem um arquivo de comandas, nada é enviado.",
+  "obrigatorios": ["comandas"],
+  "paginas": [
+    { "url": "/relatorio/relatorio15", "nome": "Vendas",                     "periodo": true },
+    { "url": "/relatorio/relatorio20", "nome": "Faturamento",                "periodo": true },
+    { "url": "/relatorio/relatorio01", "nome": "Movimentações",              "periodo": true },
+    { "url": "/relatorio/relatorio04", "nome": "Histórico de Transações",    "periodo": true },
+    { "url": "/relatorio/relatorio03", "nome": "Histórico de agendamentos",  "periodo": true },
+    { "url": "/relatorio/relatorio10", "nome": "Serviços",                   "periodo": true },
+    { "url": "/relatorio/relatorio09", "nome": "Período e serviço",          "periodo": true },
+    { "url": "/relatorio/relatorio19", "nome": "Quantidade de assinantes",   "periodo": true },
+    { "url": "/relatorio/relatorio21", "nome": "Cancelados por período",     "periodo": true },
+    { "url": "/relatorio/relatorio35", "nome": "Alterações nas assinaturas", "periodo": true },
+    { "url": "/usuario",               "nome": "Usuários (equipe)",          "periodo": false }
   ]
 }
