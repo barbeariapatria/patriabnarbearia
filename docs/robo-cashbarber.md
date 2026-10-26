@@ -10,6 +10,12 @@ exporta os relatórios do mês em CSV e envia para o painel, que importa como em
 - [ ] Mapear no CashBarber o login e a exportação de cada relatório (precisa de acesso ao site).
 - [ ] Script do robô (Playwright) + agendamento diário no GitHub Actions.
 
+## Horário
+
+**Todo dia às 20h (horário de Brasília)** = 23h UTC → no GitHub Actions: `cron: "0 23 * * *"`.
+O GitHub pode atrasar alguns minutos em horários de pico. O robô importa o mês corrente; no dia 1º, também
+reimporta o mês anterior completo (para fechar o último dia).
+
 ## Relatórios a exportar (período: dia 1 ao último dia do mês)
 
 | Relatório | Uso no painel |
