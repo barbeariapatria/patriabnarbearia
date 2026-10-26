@@ -145,6 +145,7 @@ async function catalogo(page) {
   const add = (href, texto) => {
     let u; try { u = new URL(href, BASE); } catch { return; }
     if (u.origin !== new URL(BASE).origin) return;
+    if (!/\/relatorio/i.test(u.pathname)) return; // só páginas de relatório (nada de telas de cadastro/alteração)
     const key = u.pathname + u.search;
     if (!vistos.has(key)) vistos.set(key, { url: key, nomes: new Set(), titulo: '' });
     if (texto) vistos.get(key).nomes.add(texto);
@@ -156,14 +157,20 @@ async function catalogo(page) {
     if (r && r.ok()) for (const l of await linksDeRelatorio(page)) add(l.href, l.texto);
   }
   // padrão conhecido do CashBarber: /relatorio/relatorioN
-  for (let n = 1; n <= 40; n++) if (![...vistos.keys()].some((k) => k.endsWith(`/relatorio${n}`))) add(`/relatorio/relatorio${n}`, '');
+  if (!vistos.size) for (let n = 1; n <= 40; n++) add(`/relatorio/relatorio${pad(n)}`, '');
   const lista = [];
   for (const item of vistos.values()) {
     const r = await page.goto(BASE + item.url, { waitUntil: 'domcontentloaded' }).catch(() => null);
     if (!r || r.status() >= 400 || await page.locator('input[type="password"]:visible').count()) continue;
     await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
     item.titulo = await tituloDaPagina(page);
-    lista.push({ url: new URL(page.url()).pathname + new URL(page.url()).search, pedido: item.url, nomes: [...item.nomes], titulo: item.titulo });
+    const pagina = { url: new URL(page.url()).pathname + new URL(page.url()).search, pedido: item.url, nomes: [...item.nomes], titulo: item.titulo };
+    if (MODO === 'mapear') {
+      Object.assign(pagina, await estrutura(page));
+      const datas = pagina.campos.filter((c) => c.type === 'date' || /data|date|inicio|fim|periodo/i.test(`${c.name} ${c.id} ${c.placeholder}`)).length;
+      log(`  ${pagina.url} · ${[...item.nomes][0] || ''} · ${item.titulo} · ${datas} campo(s) de data · botões: ${pagina.botoes.slice(0, 12).join(', ')}`);
+    }
+    lista.push(pagina);
   }
   log(`Páginas de relatório encontradas: ${lista.length}`);
   return lista;
@@ -382,7 +389,10 @@ async function main() {
             log(`  ${c.chave}: período por ${como}`);
           }
           const ex = await exportar(page);
-          if (!ex || !ex.csv?.trim()) throw new Error('não consegui exportar');
+          if (!ex || !ex.csv?.trim()) {
+            const { botoes } = await estrutura(page);
+            throw new Error(`não consegui exportar · botões na tela: ${botoes.slice(0, 15).join(', ') || '(nenhum)'}`);
+          }
           log(`  ${c.chave}: ${ex.origem} (${ex.arquivo}) · ${resumoCsv(ex.csv)}`);
           files.push({ name: `${c.chave}.csv`, text: ex.csv });
           resumo.relatorios[c.chave] = `ok · ${ex.origem}`;

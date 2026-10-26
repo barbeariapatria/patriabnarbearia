@@ -6,7 +6,7 @@
     { "chave": "servicos",      "obrigatorio": false, "url": "", "periodo": true,  "nomes": ["serviços realizados", "servicos realizados", "serviços"] },
     { "chave": "assinantes",    "obrigatorio": false, "url": "", "periodo": false, "nomes": ["assinantes", "assinaturas"] },
     { "chave": "cancelamentos", "obrigatorio": false, "url": "", "periodo": true,  "nomes": ["cancelamentos de assinatura", "cancelamentos", "assinaturas canceladas"] },
-    { "chave": "equipe",        "obrigatorio": false, "url": "", "periodo": false, "nomes": ["usuários", "usuarios", "equipe", "profissionais"] },
+    { "chave": "equipe",        "obrigatorio": false, "url": "/usuario", "periodo": false, "nomes": ["usuários", "usuarios", "equipe", "profissionais"] },
     { "chave": "relatorio15",   "obrigatorio": false, "url": "/relatorio/relatorio15", "periodo": true, "nomes": [] }
   ]
 }
