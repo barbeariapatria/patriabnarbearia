@@ -39,7 +39,7 @@
     {
       "url": "/relatorio/relatorio19",
       "nome": "Quantidade de assinantes",
-      "periodo": true
+      "periodo": false
     },
     {
       "url": "/relatorio/relatorio21",
