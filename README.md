@@ -3,7 +3,7 @@
 Dashboard de **metas (mensal e quinzenal), faturamento diário e análise de profissionais**, montado a partir das planilhas
 "Gráfico de resultados SVA" e "Análise de Profissionais". Inclui **login com senha, painel admin** e **webhook** para receber os dados do CashBarber automaticamente.
 
-## Rodando
+## Rodando no computador
 
 ```bash
 npm install
@@ -14,8 +14,7 @@ npm start                 # http://localhost:3000
 
 Requer **Node.js 22.5+** (usa o SQLite nativo `node:sqlite`, sem dependências nativas). O banco fica em `data/dashboard.db`.
 **Acesso:** o painel tem um único login, `barbeariapatria@gmail.com` (variável `ADMIN_USER`). A senha vem da variável
-`ADMIN_PASSWORD` e nunca fica no código. Sem ela, uma senha temporária aparece no log do servidor. Se esquecer a senha,
-defina a nova em `ADMIN_PASSWORD` com `RESET_ADMIN_PASSWORD=true` e reinicie. No primeiro start também são importados os dados
+`ADMIN_PASSWORD` e nunca fica no código; ela é a senha oficial e vale a partir do próximo início do servidor. No primeiro start também são importados os dados
 de Janeiro e Março das planilhas.
 
 ## Páginas
@@ -27,6 +26,14 @@ de Janeiro e Março das planilhas.
 | Faturamento diário | Tabela do mês (serviços, produtos, novas assinaturas, SVA, recorrência, status) — admin edita direto na tabela; exporta CSV |
 | Profissionais | Ranking, faturamento × assinatura, ticket médio vs média, evolução mensal, comparativo completo e mapa de SVA |
 | Admin | Lançamentos mensais, equipe, metas/dias não úteis/feriados/catálogo de SVA, usuários (admin/visualizador), integração |
+
+## Importar do CashBarber
+
+Em **Admin → Importar CashBarber**, envie os CSVs exportados do mês (pode arrastar todos de uma vez):
+**Comandas** (obrigatório), **Serviços realizados**, **Assinantes** e **Cancelamentos**. O painel mostra uma prévia
+(faturamento, assinaturas novas x recorrência, SVA, produtos, profissionais, motivos de cancelamento) e, ao confirmar,
+substitui o faturamento diário daquele mês e atualiza os profissionais. Os nomes completos do CashBarber são ligados
+aos profissionais já cadastrados pelo primeiro nome.
 
 ## Webhook (CashBarber → Painel)
 
@@ -93,17 +100,32 @@ public/              painel (HTML/CSS/JS + Chart.js)
 web/                 página inicial em React (ver acima)
 ```
 
-## Colocar no ar (site com login, banco e webhook funcionando)
+## Colocar no ar na Vercel
 
-O projeto já vem com `Dockerfile` e `render.yaml`. Caminho mais simples, o **Render** (≈ US$ 7/mês + disco de 1 GB):
+A Vercel não guarda arquivos entre execuções, então o banco fica no **Turso** (SQLite na nuvem, plano gratuito).
 
-1. Crie uma conta no GitHub e um repositório **privado**; envie esta pasta para ele (botão "Add file → Upload files" serve).
-2. Crie uma conta em render.com → **New → Blueprint** → escolha o repositório. O `render.yaml` cria o serviço e o disco.
-3. Quando pedir, preencha `ADMIN_PASSWORD` com a senha do login `barbeariapatria@gmail.com`.
-4. Em ~5 minutos sai um endereço `https://patria-painel.onrender.com`. Para usar `painel.patriabarbearia.com.br`,
-   adicione o domínio em *Settings → Custom Domains* e crie o CNAME no seu provedor de domínio.
-5. Entre no painel → **Integração & Webhook** → copie a URL e o token e configure no CashBarber (ou no n8n/Make).
+1. **Banco:** na Vercel, abra o projeto → **Storage** → **Create Database** → **Turso** (ou crie em turso.tech).
+   Isso cria as variáveis `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN`. Se criar fora da Vercel, cadastre as duas à mão.
+2. **Projeto:** **Add New → Project** → importe o repositório `barbeariapatria/patriabnarbearia`.
+   O `vercel.json` já configura build, pasta pública e a API. Não mude nada nas opções de build.
+3. **Variáveis de ambiente** (Settings → Environment Variables):
 
-Alternativas: Railway (mesmo Dockerfile, adicione um Volume em `/data`) ou uma VPS com `docker build -t patria . &&
-docker run -d -p 80:3000 -v patria-dados:/data -e ADMIN_PASSWORD=... patria`. Em qualquer opção: HTTPS
-(`COOKIE_SECURE=true`) e a pasta `/data` em armazenamento persistente (é onde fica o banco).
+   | Nome | Valor |
+   |---|---|
+   | `ADMIN_USER` | `barbeariapatria@gmail.com` |
+   | `ADMIN_PASSWORD` | a senha do painel |
+   | `SESSION_SECRET` | um texto longo e aleatório (ex.: gere em 1password.com/password-generator) |
+   | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | criadas no passo 1 |
+
+4. **Deploy.** O primeiro acesso cria as tabelas, o login e importa os dados das planilhas.
+5. Entre no painel → **Importar CashBarber** e envie os CSVs do mês.
+
+**Acesso:** só entra quem usar `ADMIN_USER` + `ADMIN_PASSWORD`; qualquer outro login vê "Você não tem acesso".
+Para trocar a senha, mude `ADMIN_PASSWORD` na Vercel e faça um novo deploy (Deployments → Redeploy).
+
+## Outras hospedagens
+
+O projeto também roda com Docker (`Dockerfile`) ou no Render (`render.yaml`): sem as variáveis do Turso, o banco
+é um arquivo em `DATA_DIR`, que precisa ficar em disco persistente. Em uma VPS:
+`docker build -t patria . && docker run -d -p 80:3000 -v patria-dados:/data -e ADMIN_PASSWORD=... patria`.
+

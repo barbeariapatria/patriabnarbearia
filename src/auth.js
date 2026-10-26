@@ -96,6 +96,8 @@ function clearAttempts(ip) { attempts.delete(ip); }
 
 // Por padrão o painel tem um único login (o da barbearia). MULTI_USER=true libera o cadastro de outros usuários.
 const SINGLE_USER = process.env.MULTI_USER !== 'true';
+// Com ADMIN_PASSWORD definida, a senha é gerenciada na hospedagem e não pode ser trocada pelo painel
+const PASSWORD_MANAGED = !!process.env.ADMIN_PASSWORD;
 
 async function ensureDefaultAdmin() {
   const username = (process.env.ADMIN_USER || 'barbeariapatria@gmail.com').trim();
@@ -103,10 +105,10 @@ async function ensureDefaultAdmin() {
   if (SINGLE_USER) await db.run('DELETE FROM users WHERE username <> ?', username);
   const existing = await db.get('SELECT * FROM users WHERE username = ?', username);
   if (existing) {
-    // RESET_ADMIN_PASSWORD=true redefine a senha para a de ADMIN_PASSWORD (útil se ela for esquecida)
-    if (envPassword && process.env.RESET_ADMIN_PASSWORD === 'true') {
+    // ADMIN_PASSWORD é a senha oficial: se mudar na hospedagem, passa a valer no próximo início
+    if (envPassword && !verifyPassword(envPassword, existing.password_hash)) {
       await db.run("UPDATE users SET password_hash = ?, must_change = 0, role = 'admin' WHERE id = ?", hashPassword(envPassword), existing.id);
-      console.log(`🔑 Senha de ${username} redefinida a partir de ADMIN_PASSWORD.`);
+      console.log(`🔑 Senha de ${username} atualizada a partir de ADMIN_PASSWORD.`);
     }
     return;
   }
@@ -118,5 +120,5 @@ async function ensureDefaultAdmin() {
 
 module.exports = {
   hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, publicUser, loadSecret,
-  attachUser, requireAuth, requireAdmin, loginRateLimit, clearAttempts, ensureDefaultAdmin, SINGLE_USER,
+  attachUser, requireAuth, requireAdmin, loginRateLimit, clearAttempts, ensureDefaultAdmin, SINGLE_USER, PASSWORD_MANAGED,
 };

@@ -212,8 +212,8 @@
       const btn = e.target.querySelector('button');
       btn.disabled = true;
       try {
-        const { user, single_user } = await api('/api/auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } });
-        state.user = user; state.singleUser = single_user;
+        const { user, single_user, password_managed } = await api('/api/auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } });
+        state.user = user; state.singleUser = single_user; state.passwordManaged = password_managed;
         if (!location.hash || location.hash === '#/') location.hash = '#/inicio';
         renderShell();
       } catch (err) {
@@ -230,6 +230,7 @@
     { path: 'faturamento', label: 'Faturamento diário', icon: 'calendar', title: 'Faturamento por dia', month: true },
     { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true },
     { group: 'Administração', admin: true },
+    { path: 'admin/importar', label: 'Importar CashBarber', icon: 'download', title: 'Importar relatórios do CashBarber', admin: true },
     { path: 'admin/lancamentos', label: 'Lançamentos', icon: 'edit', title: 'Lançamentos por profissional', month: true, admin: true },
     { path: 'admin/equipe', label: 'Equipe', icon: 'team', title: 'Equipe', admin: true },
     { path: 'admin/metas', label: 'Metas e configurações', icon: 'target', title: 'Metas e configurações', admin: true },
@@ -255,7 +256,7 @@
         <div class="user-box">
           <div class="avatar">${esc(initials(state.user.name || state.user.username))}</div>
           <div class="meta"><b>${esc(state.user.name || state.user.username)}</b><span>${state.user.role === 'admin' ? 'Administrador' : 'Visualizador'}</span></div>
-          <button class="btn btn-ghost btn-icon" id="pwdBtn" title="Alterar senha">${icon('key')}</button>
+          ${state.passwordManaged ? '' : `<button class="btn btn-ghost btn-icon" id="pwdBtn" title="Alterar senha">${icon('key')}</button>`}
           <button class="btn btn-ghost btn-icon" id="logoutBtn" title="Sair">${icon('logout')}</button>
         </div>
       </aside>
@@ -275,7 +276,7 @@
       </main>
     </div>`;
     $('#logoutBtn').onclick = async () => { await api('/api/auth/logout', { method: 'POST' }).catch(() => {}); state.user = null; renderLogin(); };
-    $('#pwdBtn').onclick = changePasswordModal;
+    $('#pwdBtn')?.addEventListener('click', changePasswordModal);
     $('#themeBtn').onclick = () => {
       state.theme = state.theme === 'light' ? 'dark' : 'light';
       document.documentElement.dataset.theme = state.theme;
@@ -640,7 +641,7 @@
       <div class="grid g-4">
         ${kpi({ label: 'Faturamento da equipe', value: brl(T.faturamento_total), foot: `Média ${brl(A.faturamento_total)} por profissional`, ic: 'cash', tone: 'accent' })}
         ${kpi({ label: 'Clientes atendidos', value: int(T.clientes_atendidos), foot: `${int(T.geracao_demanda)} em geração de demanda`, ic: 'users' })}
-        ${kpi({ label: 'Ticket médio (equipe)', value: brl(T.clientes_atendidos ? T.faturamento_total / T.clientes_atendidos : 0), foot: `Média dos tickets: ${brl(A.ticket_medio)}`, ic: 'ticket' })}
+        ${kpi({ label: 'Ticket médio (equipe)', value: brl(teamTicket(list)), foot: `Média simples dos tickets: ${brl(A.ticket_medio)}`, ic: 'ticket' })}
         ${kpi({ label: 'Comissões', value: brl(T.comissao), foot: `Assinaturas ${brl(T.faturamento_assinatura)}`, ic: 'star' })}
       </div>
 
@@ -734,6 +735,13 @@
         scales: { y: { ...moneyAxis, beginAtZero: true }, x: { grid: { display: false }, border: { display: false } } },
         plugins: { tooltip: { itemSort: (a, b) => b.raw - a.raw, callbacks: { label: (c) => (c.raw === null ? null : ` ${c.dataset.label}: ${brl(c.raw)}`) } } } },
     });
+  }
+
+  // Ticket da equipe na mesma base dos individuais (cada ticket pondera pelo nº de atendimentos pagos)
+  function teamTicket(list) {
+    const withTicket = list.filter((p) => p.ticket_medio > 0);
+    const pagos = withTicket.reduce((s, p) => s + p.faturamento_total / p.ticket_medio, 0);
+    return pagos ? withTicket.reduce((s, p) => s + p.faturamento_total, 0) / pagos : 0;
   }
 
   function avgLinePlugin(value) {
@@ -1136,8 +1144,101 @@
     state.unmountBento = window.BarberBento.mount($('#bentoMount', view), props);
   }
 
+  // ============================================================ Admin · Importar CashBarber
+  const REPORT_LABEL = { comandas: 'Comandas', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos' };
+
+  async function viewAdminImport(view) {
+    const { ultima } = await api('/api/admin/importar');
+    $('#pageSub').textContent = 'Envie os CSVs exportados do CashBarber e o painel preenche o mês automaticamente';
+    view.innerHTML = `
+      <div class="grid g-2-1">
+        <div class="card fade-in">
+          <div class="card-h"><h3>${icon('download')} Arquivos do mês</h3></div>
+          <label class="drop" id="drop" for="csvFiles">
+            ${icon('db')}
+            <b>Arraste os relatórios aqui ou clique para escolher</b>
+            <span class="muted">Arquivos .csv exportados do CashBarber · pode enviar todos de uma vez</span>
+            <input type="file" id="csvFiles" accept=".csv,text/csv" multiple hidden>
+          </label>
+          <div id="fileList" class="chips" style="margin-top:12px"></div>
+          <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+            <button class="btn btn-primary" id="analyze" disabled>${icon('eye')} Analisar arquivos</button>
+          </div>
+        </div>
+        <div class="card fade-in">
+          <div class="card-h"><h3>Quais relatórios exportar</h3></div>
+          <ol class="steps">
+            <li><span><b>Comandas</b> (obrigatório): ID da comanda, profissional, cliente, tipo e valor. Dá o faturamento de cada dia, de cada profissional e das assinaturas.</span></li>
+            <li><span><b>Serviços realizados</b>: separa SVA (sobrancelha, selagem, depilação…) e produtos dentro do valor das comandas.</span></li>
+            <li><span><b>Assinantes</b>: identifica quais cobranças são assinaturas novas e quais são recorrência.</span></li>
+            <li><span><b>Cancelamentos</b>: mostra quantos cancelaram no mês e por quê.</span></li>
+          </ol>
+          ${ultima ? `<p class="muted" style="margin:16px 0 0;font-size:12.5px">Última importação: <b style="color:var(--text)">${MONTHS[ultima.mes - 1]}/${ultima.ano}</b> em ${new Date(ultima.em).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</p>` : ''}
+        </div>
+      </div>
+      <div id="preview"></div>`;
+
+    let files = [];
+    const input = $('#csvFiles'); const drop = $('#drop');
+    const readAll = async (list) => {
+      files = await Promise.all([...list].filter((f) => /\.csv$/i.test(f.name) || f.type.includes('csv')).map((f) => f.text().then((text) => ({ name: f.name, text }))));
+      $('#fileList').innerHTML = files.map((f) => `<span class="chip on">${esc(f.name)}</span>`).join('') || '<span class="muted">Nenhum CSV selecionado</span>';
+      $('#analyze').disabled = !files.length;
+      $('#preview').innerHTML = '';
+    };
+    input.onchange = () => readAll(input.files);
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); readAll(e.dataTransfer.files); });
+
+    $('#analyze').onclick = async () => {
+      const btn = $('#analyze'); btn.disabled = true;
+      try {
+        const { plan } = await api('/api/admin/importar', { method: 'POST', body: { files } });
+        renderPreview(plan);
+      } catch (e) { toast(e.message, 'err'); } finally { btn.disabled = false; }
+    };
+
+    function renderPreview(plan) {
+      const r = plan.resumo; const mes = `${MONTHS[plan.mes - 1]}/${plan.ano}`;
+      $('#preview').innerHTML = `
+        <div class="card fade-in" style="border-color:color-mix(in srgb,var(--accent) 50%,var(--border))">
+          <div class="card-h"><h3>Prévia · ${mes}</h3><div class="grow"></div>
+            ${plan.relatorios.map((t) => `<span class="badge good">${icon('check')}${REPORT_LABEL[t]}</span>`).join(' ')}
+            ${plan.ignorados.map((n) => `<span class="badge warn" title="Formato não reconhecido">${esc(n)}</span>`).join(' ')}</div>
+          <div class="grid g-4" style="gap:12px">
+            ${[['Faturamento total', brl(r.faturamento_total)], ['Comandas', `${int(r.comandas)} · ${brl(r.servicos + r.produtos + r.sva)}`],
+              ['Assinaturas cobradas', `${int(r.cobrancas_assinatura)} · ${brl(r.novas_assinaturas + r.recorrencia)}`], ['Novas assinaturas', `${int(r.novas_assinaturas_qtd)} · ${brl(r.novas_assinaturas)}`],
+              ['SVA', brl(r.sva)], ['Produtos', brl(r.produtos)], ['Assinantes em dia', r.assinantes_ativos ?? '—'], ['Cancelamentos no mês', r.cancelamentos ?? '—']]
+              .map(([l, v]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:17px;font-weight:700">${v}</div></div>`).join('')}
+          </div>
+          ${r.sva_proporcional ? `<p class="muted" style="font-size:12.5px;margin:14px 0 0">${icon('alert')} O CashBarber informa SVA e produtos só no total do mês. Por isso, a divisão de cada dia entre serviços, SVA e produtos segue a proporção do mês. O total de cada dia é exato.</p>` : ''}
+          <h4 style="font-size:14px;margin:20px 0 10px">Profissionais</h4>
+          <div class="table-wrap"><table class="t">
+            <thead><tr><th>No painel</th><th>No CashBarber</th><th class="r">Faturamento</th><th class="r">Atendimentos</th><th class="r">Clientes únicos</th><th class="r">Ticket (comandas pagas)</th><th class="r">Cadastros novos</th></tr></thead>
+            <tbody>${plan.profissionais.map((p) => `<tr><td><b>${esc(p.nome)}</b> ${p.existente ? '' : '<span class="badge accent" style="font-size:10.5px">novo</span>'}</td><td class="muted">${esc(p.nome_cashbarber)}</td>
+              <td class="r num">${brl(p.faturamento_total)}</td><td class="r num">${int(p.clientes_atendidos)}</td><td class="r num">${int(p.clientes_unicos)}</td><td class="r num">${brl(p.ticket_medio)}</td><td class="r num">${int(p.geracao_demanda)}</td></tr>`).join('')}</tbody>
+          </table></div>
+          ${r.motivos_cancelamento ? `<h4 style="font-size:14px;margin:20px 0 10px">Motivos de cancelamento</h4><div class="chips">${r.motivos_cancelamento.map(([k, n]) => `<span class="chip">${esc(k)} · ${n}</span>`).join('')}</div>` : ''}
+          <div class="banner" style="margin-top:20px"><div class="grow">Importar substitui o faturamento diário de <b>${mes}</b> e atualiza os números dos profissionais acima. Os demais meses não mudam.</div>
+            <button class="btn btn-primary" id="confirmImport">${icon('check')} Importar ${mes}</button></div>
+        </div>`;
+      $('#confirmImport').onclick = async () => {
+        const b = $('#confirmImport'); b.disabled = true;
+        try {
+          await api('/api/admin/importar', { method: 'POST', body: { files, confirmar: true } });
+          toast(`${mes} importado`);
+          state.y = plan.ano; state.m = plan.mes;
+          try { sessionStorage.setItem('ym', JSON.stringify({ y: state.y, m: state.m })); } catch {}
+          location.hash = '#/inicio';
+        } catch (e) { toast(e.message, 'err'); b.disabled = false; }
+      };
+    }
+  }
+
   const VIEWS = {
     inicio: viewHome,
+    'admin/importar': viewAdminImport,
     'visao-geral': viewOverview,
     faturamento: viewDaily,
     profissionais: viewPros,
@@ -1151,6 +1252,6 @@
   // ============================================================ Boot
   window.addEventListener('hashchange', () => state.user && route());
   api('/api/auth/me')
-    .then(({ user, single_user }) => { state.user = user; state.singleUser = single_user; renderShell(); })
+    .then(({ user, single_user, password_managed }) => { state.user = user; state.singleUser = single_user; state.passwordManaged = password_managed; renderShell(); })
     .catch(() => renderLogin());
 })();

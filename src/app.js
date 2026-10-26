@@ -6,6 +6,7 @@ const auth = require('./auth');
 const metrics = require('./metrics');
 const webhook = require('./webhook');
 const seed = require('./seed');
+const importer = require('./importer');
 
 // Prepara o banco uma vez por instância (em serverless, a cada "cold start")
 let ready;
@@ -26,7 +27,7 @@ app.disable('x-powered-by');
 app.use(async (_req, res, next) => {
   try { await init(); next(); } catch (e) { console.error(e); res.status(500).json({ error: `Falha ao iniciar o banco de dados: ${e.message}` }); }
 });
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '4mb' }));
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
@@ -50,17 +51,18 @@ app.post('/api/auth/login', auth.loginRateLimit, wrap(async (req, res) => {
   const { username, password } = req.body || {};
   const user = username && (await db.get('SELECT * FROM users WHERE username = ?', String(username).trim()));
   if (!user || !auth.verifyPassword(String(password || ''), user.password_hash)) {
-    res.status(401).json({ error: 'Usuário ou senha inválidos' });
+    res.status(401).json({ error: 'Você não tem acesso' });
     return;
   }
   auth.clearAttempts(req.ip);
   await db.run('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?', user.id);
   auth.setSessionCookie(res, user);
-  return { user: auth.publicUser(user), single_user: auth.SINGLE_USER };
+  return { user: auth.publicUser(user), single_user: auth.SINGLE_USER, password_managed: auth.PASSWORD_MANAGED };
 }));
 app.post('/api/auth/logout', (_req, res) => { auth.clearSessionCookie(res); res.json({ ok: true }); });
-app.get('/api/auth/me', auth.requireAuth, (req, res) => res.json({ user: auth.publicUser(req.user), single_user: auth.SINGLE_USER }));
+app.get('/api/auth/me', auth.requireAuth, (req, res) => res.json({ user: auth.publicUser(req.user), single_user: auth.SINGLE_USER, password_managed: auth.PASSWORD_MANAGED }));
 app.post('/api/auth/password', auth.requireAuth, wrap(async (req) => {
+  if (auth.PASSWORD_MANAGED) throw new Error('A senha deste painel é definida na hospedagem (variável ADMIN_PASSWORD).');
   const { atual, nova } = req.body || {};
   if (!auth.verifyPassword(String(atual || ''), req.user.password_hash)) throw new Error('Senha atual incorreta');
   if (!nova || String(nova).length < 6) throw new Error('A nova senha deve ter pelo menos 6 caracteres');
@@ -159,7 +161,7 @@ app.delete('/api/admin/profissionais/:id/mensal', auth.requireAdmin, wrap(async 
 // ---------------------------------------------------------------- Admin: configurações
 app.get('/api/admin/config', auth.requireAdmin, wrap(async () => {
   const s = await getAllSettings();
-  delete s.session_secret; delete s.seeded;
+  delete s.session_secret; delete s.seeded; delete s.ultima_importacao;
   return s;
 }));
 app.put('/api/admin/config', auth.requireAdmin, wrap(async (req) => {
@@ -246,6 +248,17 @@ app.post('/api/admin/webhook/testar', auth.requireAdmin, wrap(async (req) => {
   if (simular === false) await webhook.notifyOutgoing('teste_admin');
   return { simulado: simular !== false, results };
 }));
+// Importação dos relatórios CSV do CashBarber: sem "confirmar" só analisa; com "confirmar" grava
+app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
+  const files = Array.isArray(req.body?.files) ? req.body.files.filter((f) => f && typeof f.text === 'string') : [];
+  if (!files.length) throw new Error('Selecione os arquivos CSV exportados do CashBarber.');
+  const plan = await importer.analyze(files);
+  if (!req.body.confirmar) return { plan };
+  const result = await importer.apply(plan);
+  await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, resumo: plan.resumo, extras_mes: plan.extras_mes });
+  return { result, plan };
+}));
+app.get('/api/admin/importar', auth.requireAdmin, wrap(async () => ({ ultima: (await getAllSettings()).ultima_importacao || null })));
 app.post('/api/admin/demo', auth.requireAdmin, wrap(async (req) => {
   const { y, m } = ym(req.body || {});
   await seed.seedDemo(y, m);

@@ -835,8 +835,9 @@ function QuinzenaTile({ p, accent, onNavigate }: { p: BarberBentoProps; accent: 
 
 function TicketTile({ pros, accent }: { pros: BarberPro[]; accent: string }) {
   const list = pros.filter((p) => p.ticket > 0);
-  const clientes = pros.reduce((s, p) => s + p.clientes, 0);
-  const team = clientes ? pros.reduce((s, p) => s + p.faturamento, 0) / clientes : 0;
+  // Ticket da equipe na mesma base dos individuais: faturamento ÷ atendimentos que geraram pagamento
+  const pagos = list.reduce((s, p) => s + p.faturamento / p.ticket, 0);
+  const team = pagos ? list.reduce((s, p) => s + p.faturamento, 0) / pagos : 0;
   if (list.length < 1) {
     return (
       <Tile title="Ticket médio da equipe" className="@4xl:col-start-3 @4xl:row-start-3">
@@ -863,7 +864,7 @@ function TicketTile({ pros, accent }: { pros: BarberPro[]; accent: string }) {
       }
     >
       <p className="font-mono text-[22px] font-semibold tabular-nums">{brl2(team)}</p>
-      <p className="font-mono text-[11px] text-muted-foreground">faturamento ÷ clientes</p>
+      <p className="font-mono text-[11px] text-muted-foreground">média ponderada dos profissionais</p>
 
       <div className="relative mt-6 h-10" role="img" aria-label={`Tickets entre ${brl(min)} e ${brl(max)}; equipe ${brl(team)}`}>
         <div className="absolute inset-x-0 top-1/2 h-[2px] -translate-y-1/2 rounded-full bg-muted" />
