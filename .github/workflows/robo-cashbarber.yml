@@ -26,6 +26,9 @@ jobs:
   sincronizar:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Os secrets (CASHBARBER_EMAIL, CASHBARBER_PASSWORD, IMPORT_TOKEN, PAINEL_URL) estão no ambiente
+    # "CASHBARBER_EMAIL" (Settings → Environments). Se forem movidos para Repository secrets, esta linha pode sair.
+    environment: CASHBARBER_EMAIL
     defaults:
       run:
         working-directory: robo
