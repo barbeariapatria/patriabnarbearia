@@ -274,7 +274,7 @@ async function lerAviso(page) {
 // Escolhe a filial nos filtros do relatório. Vazio, o CashBarber entende "todas as filiais" e o usuário do robô
 // recebe "Você não possui acesso a todas as filiais". Acha o campo pelo rótulo "Filial"/"Unidade" e escolhe a opção
 // da Pátria (CASHBARBER_FILIAL muda o nome procurado) ou a única opção real. Nunca mexe em profissional, cliente etc.
-const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'village|rio das ostras|p[aá]tria', 'i');
+const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'village|rio das ostras', 'i');
 const RE_OPCAO_GERAL = /^(todas?|todos|selecione|nenhum|--)/i;
 async function escolherFilial(page) {
   // 1) acha a caixinha de cada campo "Filial" (o menor bloco em volta do rótulo que tem um controle)
@@ -304,13 +304,33 @@ async function escolherFilial(page) {
     if (v && !/^(todas?|0|-1)$/i.test(v)) { FILIAL_ID = /^\d+$/.test(v) ? Number(v) : v; FILIAL_ORIGEM = 'opções da tela'; log(`  Filial Village encontrada: código ${FILIAL_ID} (nas opções da tela)`); }
   }
   if (!campos.length) return [];
-  const mostra = (box) => box.evaluate((b) => (b.innerText || '').replace(/\s+/g, ' ').trim() + ' ' +
-    [...b.querySelectorAll('input, select')].map((x) => (x.tagName === 'SELECT' ? [...x.selectedOptions].map((o) => o.text).join(',') : x.value)).join(' ')).catch(() => '');
+  const mostra = (box) => box.evaluate((b) => {
+    const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+    const partes = [];
+    for (const sel of b.querySelectorAll('select')) partes.push([...sel.selectedOptions].map((o) => o.text.trim()).join(','));
+    for (const e of b.querySelectorAll('.filter-option-inner-inner, .filter-option, [class*="singleValue"], [class*="multiValue__label"], .select2-selection__rendered, .select2-selection__choice, .MuiSelect-select, .MuiChip-label, [role="combobox"]')) if (vis(e)) partes.push((e.innerText || '').trim());
+    for (const i of b.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"])')) if (vis(i)) partes.push(i.value);
+    return partes.filter(Boolean).join(' | ');
+  }).catch(() => '');
   const feitos = [];
   for (const c of campos) {
     const box = page.locator(`[data-robo-filial="${c.i}"]`);
     if (RE_PATRIA.test(await mostra(box))) { feitos.push('botão Filial mostra Village'); continue; }
 
+    // 2a) bootstrap-select / select2 (o <select> fica escondido e o botão é desenhado por cima)
+    const escondido = box.locator('select').first();
+    if (await escondido.count()) {
+      const r = await escondido.evaluate((sel, re) => {
+        const rx = new RegExp(re, 'i');
+        const op = [...sel.options].find((o) => rx.test(o.text));
+        if (!op) return null;
+        const $ = window.jQuery;
+        if ($ && $(sel).data('selectpicker')) { $(sel).selectpicker('val', sel.multiple ? [op.value] : op.value); $(sel).trigger('change'); return 'bootstrap-select'; }
+        if ($ && $(sel).data('select2')) { $(sel).val(sel.multiple ? [op.value] : op.value).trigger('change'); return 'select2'; }
+        return null;
+      }, RE_PATRIA.source).catch(() => null);
+      if (r) await page.waitForTimeout(500);
+    }
     // 2) <select> visível comum: escolhe pela opção
     const selVis = box.locator('select:visible').first();
     if (await selVis.count()) {
@@ -341,7 +361,15 @@ async function escolherFilial(page) {
     // 4) confere o que o botão mostra agora
     const agora = (await mostra(box)).slice(0, 80);
     if (RE_PATRIA.test(agora)) feitos.push('botão Filial mostra Village');
-    else feitos.push(`botão Filial mostra "${agora.slice(0, 30) || 'vazio'}"`);
+    else {
+      feitos.push(`botão Filial mostra "${agora.slice(0, 30) || 'vazio'}"`);
+      const html = await box.evaluate((b) => {
+        const c = b.cloneNode(true);
+        c.querySelectorAll('svg, path, script, style').forEach((x) => x.remove());
+        return c.outerHTML.replace(/\s+/g, ' ').replace(/ (style|d|viewBox|xmlns)="[^"]*"/g, '');
+      }).catch(() => '');
+      log(`    campo Filial (estrutura): ${html.slice(0, 1500)}`);
+    }
   }
   return feitos;
 }
@@ -410,7 +438,7 @@ let FILIAL_ORIGEM = FILIAL_ID ? 'CASHBARBER_FILIAL_ID' : null;
 function procurarFilial(obj, caminho) {
   if (FILIAL_ID || !obj || typeof obj !== 'object') return;
   if (Array.isArray(obj)) { for (const x of obj) procurarFilial(x, caminho); return; }
-  const nome = Object.entries(obj).find(([k, v]) => typeof v === 'string' && /nome|name|descricao|fantasia|razao|label|titulo|filial/i.test(k) && RE_PATRIA.test(v));
+  const nome = Object.entries(obj).find(([k, v]) => typeof v === 'string' && /^(nome|name|nome_fantasia|fantasia|razao_social|label|titulo|filial|nome_filial|descricao)$/i.test(k) && RE_PATRIA.test(v) && v.length < 80);
   if (nome) {
     const id = obj.id_filial ?? obj.filial_id ?? obj.idFilial ?? obj.id ?? obj.value ?? obj.codigo;
     if (id != null && typeof id !== 'object') { FILIAL_ID = id; FILIAL_ORIGEM = `${caminho} ("${nome[1].slice(0, 40)}")`; return; }
