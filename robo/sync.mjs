@@ -577,10 +577,17 @@ async function exportar(page, { tabela = true } = {}) {
     }
   }
   if (primeiro) return primeiro;
-  // último recurso: ler a maior tabela da tela
   if (!tabela) return null;
+  // sem arquivo: usa a resposta completa do CashBarber; se não der, lê a tabela da tela página por página
+  for (let t = 0; t < 10 && RESP_REL.length === REL_DESDE; t++) await page.waitForTimeout(500);
+  const resp = relatorioDaResposta();
   const csv = await tabelaDaTela(page);
-  return csv && tipoDoCsv(csv) ? { origem: 'tabela da tela', arquivo: 'tabela.csv', csv } : null;
+  const tela = csv && tipoDoCsv(csv) ? { origem: 'tabela da tela', arquivo: 'tabela.csv', csv } : null;
+  if (resp && tela && tipoDoCsv(tela.csv) === tipoDoCsv(resp.csv)) {
+    const nTela = tela.csv.split('\n').length - 1;
+    return nTela > resp.linhas ? tela : resp;
+  }
+  return resp || tela;
 }
 
 // abre o filtro pelo botão da área do relatório (muitas vezes só um ícone de funil) e preenche as datas na janela
@@ -596,25 +603,129 @@ async function abrirFiltro(page, per) {
   return null;
 }
 
+// Lê a maior tabela da tela, passando por todas as páginas dela. Só devolve se tiver certeza de que leu tudo:
+// comandas pela metade dariam um faturamento errado (o painel ainda tem a trava de segurança).
 async function tabelaDaTela(page) {
   // DataTables: mostrar todas as linhas
-  const tamanho = page.locator('select[name$="_length"]:visible').first();
+  const tamanho = page.locator('select[name$="_length"]:visible, .dataTables_length select:visible').first();
   if (await tamanho.count()) {
     const valores = await tamanho.locator('option').evaluateAll((os) => os.map((o) => o.value));
     const maior = valores.includes('-1') ? '-1' : valores.sort((a, b) => Number(b) - Number(a))[0];
     if (maior) { await tamanho.selectOption(maior).catch(() => {}); await page.waitForTimeout(1500); }
   }
-  return page.evaluate(() => {
+  const ler = () => page.evaluate(() => {
     const tabs = [...document.querySelectorAll('table')].map((t) => ({ t, n: t.querySelectorAll('tbody tr').length })).sort((a, b) => b.n - a.n);
     if (!tabs.length) return null;
     const t = tabs[0].t;
     const cab = [...(t.querySelector('thead tr:last-child') || t.querySelector('tr')).querySelectorAll('th, td')].map((c) => c.innerText.trim());
-    if (cab.length < 3) return null;
     const linhas = [...t.querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('td')].map((c) => c.innerText.trim()))
       .filter((r) => r.length === cab.length);
-    const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
-    return [cab, ...linhas].map((r) => r.map(q).join(';')).join('\n');
+    // "Mostrando 1 a 10 de 1.712 registros" / "1-10 de 1712" / "Total: 1712"
+    const txt = document.body.innerText;
+    const m = txt.match(/(?:mostrando|exibindo|showing)[^\n]{0,40}?\d+\s*(?:a|até|-|to)\s*\d+\s*(?:de|of)\s*([\d.]+)/i)
+      || txt.match(/\b\d+\s*[-–]\s*\d+\s+de\s+([\d.]+)/i);
+    return { cab, linhas, total: m ? Number(m[1].replace(/\./g, '')) : null };
   });
+  const primeira = await ler();
+  if (!primeira || primeira.cab.length < 3) return null;
+  const vistas = new Set(); const linhas = [];
+  const somar = (ls) => { let novas = 0; for (const r of ls) { const k = r.join('\u0001'); if (!vistas.has(k)) { vistas.add(k); linhas.push(r); novas++; } } return novas; };
+  somar(primeira.linhas);
+  const total = primeira.total;
+  // botão "próxima página" (DataTables, Bootstrap, Material/Vuetify ou só a setinha)
+  const proxima = () => page.locator([
+    '.paginate_button.next:not(.disabled):visible', 'li.next:not(.disabled) a:visible', 'li.page-item.next:not(.disabled) > *:visible',
+    'button[aria-label*="next" i]:not([disabled]):visible', 'button[aria-label*="próxima" i]:not([disabled]):visible', 'a[aria-label*="next" i]:visible', 'a[aria-label*="próxima" i]:visible',
+    '.pagination-next:not(.disabled):visible', '.v-pagination__next button:not([disabled]):visible', '.mat-paginator-navigation-next:not([disabled]):visible',
+  ].join(', ')).first();
+  const textual = () => page.locator('a:visible, button:visible').filter({ hasText: /^\s*(próxim[ao]|proxim[ao]|next|›|»|>)\s*$/i }).first();
+  for (let pag = 0; pag < 400 && (!total || linhas.length < total); pag++) {
+    let b = proxima();
+    if (!(await b.count())) b = textual();
+    if (!(await b.count())) break;
+    const cls = `${await b.getAttribute('class').catch(() => '')} ${await b.locator('xpath=..').getAttribute('class').catch(() => '')}`;
+    if (/disabled/.test(cls) || (await b.isDisabled().catch(() => false))) break;
+    await b.click({ timeout: 5000 }).catch(() => {});
+    let novas = 0;
+    for (let t = 0; t < 10 && !novas; t++) { await page.waitForTimeout(500); const r = await ler(); novas = r ? somar(r.linhas) : 0; }
+    if (!novas) break; // a página não mudou: acabou
+  }
+  if (total && linhas.length < total) {
+    log(`    tabela da tela: li ${linhas.length} de ${total} linhas — incompleta, não vou usar`);
+    return null;
+  }
+  if (!total && linhas.length && linhas.length % 10 === 0 && linhas.length <= 100) {
+    log(`    tabela da tela: ${linhas.length} linhas e não achei o total do relatório — pode estar cortada, não vou usar`);
+    return null;
+  }
+  const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  return [primeira.cab, ...linhas].map((r) => r.map(q).join(';')).join('\n');
+}
+
+// ---------------------------------------------------------------- respostas JSON dos relatórios
+// O CashBarber monta a tabela a partir da resposta de /api/painel/relatorios/N. Ela traz TODAS as linhas
+// do período (a tela mostra só 10 por página), então serve de fonte quando o botão de exportar não baixa nada.
+const RESP_REL = [];
+async function guardarRelatorio(resp) {
+  try {
+    if (!/\/api\/painel\/relatorios\//.test(resp.url()) || resp.status() !== 200) return;
+    if (!/json/i.test(resp.headers()['content-type'] || '')) return;
+    const texto = await resp.text();
+    if (texto.length > 40_000_000) return;
+    RESP_REL.push({ caminho: new URL(resp.url()).pathname, json: JSON.parse(texto) });
+  } catch {}
+}
+// maior lista de objetos dentro da resposta (data, data.data, itens, registros...)
+function maiorLista(o, prof = 0) {
+  if (!o || typeof o !== 'object' || prof > 5) return null;
+  let melhor = Array.isArray(o) && o.length && o.every((x) => x && typeof x === 'object' && !Array.isArray(x)) ? o : null;
+  for (const v of Array.isArray(o) ? o.slice(0, 3) : Object.values(o)) {
+    const l = maiorLista(v, prof + 1);
+    if (l && (!melhor || l.length > melhor.length)) melhor = l;
+  }
+  return melhor;
+}
+// nomes de campos da API → nomes de coluna do CSV do CashBarber
+const COLUNA_JSON = [
+  [/^(id_?da_?comanda|id_?comanda|comanda_?id|cod(igo)?_?comanda)$/i, 'ID COMANDA'],
+  [/^(profissional|nome_?profissional|profissional_?nome|barbeiro|colaborador)$/i, 'PROFISSIONAL'],
+  [/^(cliente|nome_?cliente|cliente_?nome)$/i, 'CLIENTE'],
+  [/^(tipo|tipo_?comanda)$/i, 'TIPO'],
+  [/^(valor|valor_?total|total|valor_?comanda)$/i, 'VALOR'],
+  [/^(data_?e_?hora|data_?hora|data|created_?at|data_?fechamento|fechada_?em|data_?comanda)$/i, 'DATA E HORA'],
+  [/^(filial|nome_?filial)$/i, 'FILIAL'],
+];
+function valorJson(v) {
+  if (v == null) return '';
+  if (typeof v === 'object') return v.nome ?? v.name ?? v.descricao ?? v.titulo ?? '';
+  if (typeof v === 'number') return String(v);
+  const iso = String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
+  return iso ? `${iso[3]}/${iso[2]}/${iso[1]}${iso[4] ? ` ${iso[4]}:${iso[5]}` : ''}` : String(v);
+}
+function csvDoJson(json) {
+  const lista = maiorLista(json);
+  if (!lista) return null;
+  const chaves = [...new Set(lista.slice(0, 50).flatMap((x) => Object.keys(x)))];
+  const usadas = new Set();
+  const cab = chaves.map((k) => {
+    const m = COLUNA_JSON.find(([re, nome]) => re.test(k) && !usadas.has(nome));
+    if (m) { usadas.add(m[1]); return m[1]; }
+    return k.replace(/_/g, ' ').toUpperCase();
+  });
+  const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  return { csv: [cab, ...lista.map((x) => chaves.map((k) => valorJson(x[k])))].map((r) => r.map(q).join(';')).join('\n'), linhas: lista.length, chaves };
+}
+let REL_DESDE = 0; // respostas guardadas a partir do filtro do relatório atual
+function relatorioDaResposta() {
+  const recentes = RESP_REL.slice(REL_DESDE).reverse();
+  for (const r of recentes) {
+    const x = csvDoJson(r.json);
+    if (!x) continue;
+    if (tipoDoCsv(x.csv)) return { origem: `resposta do CashBarber (${r.caminho})`, arquivo: 'resposta.csv', csv: x.csv, linhas: x.linhas };
+    // só a estrutura (nomes dos campos), nunca os dados dos clientes
+    log(`    resposta ${r.caminho}: ${x.linhas} linhas, campos ${x.chaves.slice(0, 25).join(', ')} — formato não reconhecido`);
+  }
+  return null;
 }
 
 async function paraCsv(buf, nome) {
@@ -725,6 +836,7 @@ async function main() {
   const page = await ctx.newPage();
   page.on('download', (d) => FILA.push(d));
   ctx.on('response', observarRespostas);
+  ctx.on('response', guardarRelatorio);
   await ctx.route(/\/api\/painel\/relatorios\//, ajustarPedido);
   ctx.on('page', (p) => { p.on('download', (d) => FILA.push(d)); NOVAS.push(p); });
   page.setDefaultTimeout(20000);
@@ -752,6 +864,7 @@ async function main() {
           await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' });
           await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
           let ex = null;
+          REL_DESDE = RESP_REL.length;
           if (pg.periodo) {
             const como = await definirPeriodo(page, per);
             if (!como) throw new Error('não achei o filtro de datas');
