@@ -1143,7 +1143,7 @@
           ${f('faturamento_total', 'Faturamento total (R$)')}${f('faturamento_assinatura', 'Faturamento de assinatura (R$)')}${f('comissao', 'Comissão (R$)')}
           ${f('ticket_medio', 'Ticket médio (R$) — vazio = automático')}${f('clientes_atendidos', 'Atendimentos', false)}${f('geracao_demanda', 'Geração de demanda (novos + SP)', false)}
           ${f('servicos_realizados', 'Serviços realizados', false)}${f('venda_produtos', 'Venda de produtos (R$)')}${f('qtd_produtos', 'Qtd. de produtos', false)}
-          ${f('bar', 'Bar nas comandas dele (R$) — já fora do faturamento')}
+          ${f('bar', 'Bar nas comandas dele (R$) — sai do faturamento')}
         </div>
         <h4 style="font-size:14px;margin:8px 0 12px">Serviços adicionais (quantidade)</h4>
         <div class="form-grid g3">${extras.map((k) => `<div class="field"><label>${esc(k)}</label><input class="input input-sm num" data-extra="${esc(k)}" value="${p.extras?.[k] ?? ''}" inputmode="numeric" placeholder="0"></div>`).join('')}</div></form>`,
@@ -1154,6 +1154,9 @@
             body.extras = {};
             $$('[data-extra]', el).forEach((i) => { if (i.value !== '') body.extras[i.dataset.extra] = parseBR(i.value); });
             body.ano = state.y; body.mes = state.m;
+            // bar novo informado: tira a diferença do faturamento (o bar não entra na comissão), a não ser que o faturamento também tenha sido mudado à mão
+            const delta = parseBR(body.bar) - (Number(p.bar) || 0);
+            if (delta && parseBR(body.faturamento_total) === (Number(p.faturamento_total) || 0)) body.faturamento_total = Math.max(0, Math.round((parseBR(body.faturamento_total) - delta) * 100) / 100);
             try { await api(`/api/admin/profissionais/${pro.id}/mensal`, { method: 'PUT', body }); toast('Lançamento salvo'); close(); route(); } catch (e) { toast(e.message, 'err'); }
           };
           $('[data-del]', el)?.addEventListener('click', async () => {

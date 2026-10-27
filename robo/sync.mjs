@@ -716,14 +716,47 @@ function csvDoJson(json) {
   return { csv: [cab, ...lista.map((x) => chaves.map((k) => valorJson(x[k])))].map((r) => r.map(q).join(';')).join('\n'), linhas: lista.length, chaves };
 }
 let REL_DESDE = 0; // respostas guardadas a partir do filtro do relatório atual
+// Itens de cada comanda, quando a resposta traz (ex.: comanda.itens = [{nome, valor, ...}]).
+// Vira o relatório "itens por profissional": é o que permite tirar o bar do faturamento de cada barbeiro.
+const RE_LISTA_ITENS = /^(itens|items|produtos|servicos|servicos_?produtos|comanda_?itens|detalhes|vendas)$/i;
+function itensDoJson(lista) {
+  const linhas = [];
+  const prof = (o) => valorJson(o.profissional ?? o.nome_profissional ?? o.profissional_nome ?? o.barbeiro ?? o.colaborador ?? '');
+  const nome = (o) => valorJson(o.nome ?? o.descricao ?? o.item ?? o.produto ?? o.servico ?? o.nome_item ?? o.titulo ?? '');
+  const valor = (o) => o.valor_total ?? o.total ?? o.valor ?? o.preco_total ?? o.subtotal ?? (Number(o.valor_unitario ?? o.preco ?? 0) * Number(o.quantidade ?? o.qtd ?? 1));
+  const data = (o) => valorJson(o.data_e_hora ?? o.data_hora ?? o.data ?? o.created_at ?? o.data_fechamento ?? '');
+  for (const c of lista) {
+    for (const [k, v] of Object.entries(c)) {
+      if (!RE_LISTA_ITENS.test(k) || !Array.isArray(v)) continue;
+      for (const it of v) {
+        if (!it || typeof it !== 'object' || !nome(it)) continue;
+        linhas.push([prof(it) || prof(c), nome(it), valorJson(it.tipo ?? it.categoria ?? k), valorJson(it.quantidade ?? it.qtd ?? 1), valorJson(valor(it)), data(c)]);
+      }
+    }
+  }
+  if (!linhas.length) return null;
+  const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  return [['PROFISSIONAL', 'ITEM', 'TIPO', 'QUANTIDADE', 'VALOR TOTAL', 'DATA E HORA'], ...linhas].map((r) => r.map(q).join(';')).join('\n');
+}
+// estrutura da resposta (só nomes de campos, inclusive das listas internas; nunca os valores)
+function camposDoJson(lista) {
+  const fora = [...new Set(lista.slice(0, 30).flatMap((x) => Object.keys(x)))];
+  const dentro = fora.flatMap((k) => { const v = lista.find((x) => Array.isArray(x[k]) && x[k][0] && typeof x[k][0] === 'object')?.[k]; return v ? [`${k}[]: ${Object.keys(v[0]).slice(0, 15).join(', ')}`] : []; });
+  return `${fora.slice(0, 30).join(', ')}${dentro.length ? ` · ${dentro.join(' · ')}` : ''}`;
+}
+let RESP_LIDA = false;
+const EXTRAS = []; // relatórios a mais tirados das respostas (ex.: itens das comandas)
 function relatorioDaResposta() {
+  RESP_LIDA = true;
   const recentes = RESP_REL.slice(REL_DESDE).reverse();
   for (const r of recentes) {
     const x = csvDoJson(r.json);
     if (!x) continue;
+    const lista = maiorLista(r.json);
+    log(`    resposta ${r.caminho}: ${x.linhas} linhas · campos: ${camposDoJson(lista)}`);
+    const itens = itensDoJson(lista);
+    if (itens && tipoDoCsv(itens) === 'itens') { EXTRAS.push({ tipo: 'itens', csv: itens }); log(`    itens das comandas: ${itens.split('\n').length - 1} itens (para separar o bar de cada barbeiro)`); }
     if (tipoDoCsv(x.csv)) return { origem: `resposta do CashBarber (${r.caminho})`, arquivo: 'resposta.csv', csv: x.csv, linhas: x.linhas };
-    // só a estrutura (nomes dos campos), nunca os dados dos clientes
-    log(`    resposta ${r.caminho}: ${x.linhas} linhas, campos ${x.chaves.slice(0, 25).join(', ')} — formato não reconhecido`);
   }
   return null;
 }
@@ -753,6 +786,7 @@ function tipoDoCsv(csv) {
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
   if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
+  if (k.includes('PROFISSIONAL') && ['ITEM', 'PRODUTO', 'DESCRICAO', 'NOME DO ITEM'].some((c) => k.includes(c)) && k.some((c) => c.startsWith('VALOR'))) return 'itens';
   if ((k.includes('ITEM') || k.includes('NOME')) && k.includes('QUANTIDADE') && k.includes('VALOR') && k.length <= 4) return 'vendas';
   return null;
 }
@@ -905,7 +939,10 @@ async function main() {
               ex = await aguardarResultado(page, f0, n0);
             }
           }
+          EXTRAS.length = 0; RESP_LIDA = false;
           ex ||= await exportar(page);
+          if (!RESP_LIDA && RESP_REL.length > REL_DESDE) relatorioDaResposta(); // o arquivo veio, mas os itens só vêm na resposta
+          for (const e of EXTRAS) if (!porTipo[e.tipo]) { porTipo[e.tipo] = { name: `${e.tipo}.csv`, text: e.csv }; log(`  ${nome}: + ${e.tipo} (da resposta do CashBarber)`); }
           if (!ex || !ex.csv?.trim()) {
             const aviso = await lerAviso(page);
             const lista = (await clicaveis(page)).map((x) => `[${x.desc}]`).slice(0, 25);
