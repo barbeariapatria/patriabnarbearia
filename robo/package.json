@@ -9,7 +9,7 @@
     "mapear": "MODO=mapear node sync.mjs"
   },
   "dependencies": {
-    "playwright": "^1.55.0",
-    "xlsx": "^0.18.5"
+    "playwright": "1.55.0",
+    "xlsx": "0.18.5"
   }
 }

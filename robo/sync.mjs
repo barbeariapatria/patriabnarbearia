@@ -577,7 +577,13 @@ async function estrutura(page) {
 // ---------------------------------------------------------------- principal
 async function main() {
   log(`Modo: ${MODO}`);
-  const browser = await chromium.launch();
+  // NAVEGADOR=chrome usa o Chrome já instalado na máquina (no GitHub não precisa baixar nada);
+  // se ele não abrir, tenta o Chromium do Playwright
+  let browser;
+  if (process.env.NAVEGADOR) {
+    browser = await chromium.launch({ channel: process.env.NAVEGADOR }).catch((e) => { log(`Chrome do sistema não abriu (${e.message.split('\n')[0]}); usando o Chromium do Playwright.`); return null; });
+  }
+  browser ||= await chromium.launch();
   const ctx = await browser.newContext({ acceptDownloads: true, locale: 'pt-BR', timezoneId: TZ, viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
   page.on('download', (d) => FILA.push(d));

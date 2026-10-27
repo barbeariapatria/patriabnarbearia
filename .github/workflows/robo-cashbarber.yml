@@ -37,10 +37,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Usa o Google Chrome que já vem instalado no GitHub: não baixa navegador nem pacotes do sistema
       - name: Instalar o robô
-        run: |
-          npm install --no-audit --no-fund
-          npx playwright install --with-deps chromium
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm install --no-audit --no-fund --omit=optional --prefer-offline
       - name: Rodar o robô
         env:
           CASHBARBER_EMAIL: ${{ secrets.CASHBARBER_EMAIL }}
@@ -48,6 +49,7 @@ jobs:
           CASHBARBER_URL: ${{ vars.CASHBARBER_URL || 'https://painel.cashbarber.com.br' }}
           PAINEL_URL: ${{ secrets.PAINEL_URL }}
           IMPORT_TOKEN: ${{ secrets.IMPORT_TOKEN }}
+          NAVEGADOR: chrome
           MODO: ${{ inputs.modo || 'sincronizar' }}
           MES: ${{ inputs.mes }}
         run: node sync.mjs
