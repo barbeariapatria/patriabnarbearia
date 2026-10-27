@@ -317,6 +317,10 @@ async function escolherFilial(page) {
     const box = page.locator(`[data-robo-filial="${c.i}"]`);
     if (RE_PATRIA.test(await mostra(box))) { feitos.push('botão Filial mostra Village'); continue; }
 
+    // a lista de filiais chega depois que a página abre: espera a Village aparecer (até 15 s)
+    if (await box.locator('select').count()) {
+      await box.locator('select option').filter({ hasText: RE_PATRIA }).first().waitFor({ state: 'attached', timeout: 15000 }).catch(() => {});
+    }
     // 2a) bootstrap-select / select2 (o <select> fica escondido e o botão é desenhado por cima)
     const escondido = box.locator('select').first();
     if (await escondido.count()) {
@@ -337,12 +341,14 @@ async function escolherFilial(page) {
       const ops = await selVis.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, t: o.text.trim() })));
       const op = ops.find((o) => RE_PATRIA.test(o.t));
       if (op) await selVis.selectOption(op.v).catch(() => {});
+      else log(`    (lista de filiais: ${ops.map((o) => o.t).filter(Boolean).slice(0, 6).join(' / ') || 'vazia'})`);
     } else {
       // 3) botão/lista como o de uma pessoa: clica no botão Filial e escolhe a Village na lista que abrir
       const botao = box.locator('[role="combobox"]:visible, .MuiSelect-select:visible, .MuiAutocomplete-root input:visible, .dropdown-toggle:visible, [class*="-control"]:visible, .select2-selection:visible, button:visible, input:visible').first();
       for (let tentativa = 0; tentativa < 2 && !RE_PATRIA.test(await mostra(box)); tentativa++) {
         await botao.click({ timeout: 5000 }).catch(() => {});
-        await page.waitForTimeout(1000);
+        await page.locator('[role="option"], .MuiAutocomplete-option, .select2-results__option, [class*="-option"], .dropdown-menu.show li').filter({ visible: true }).filter({ hasText: RE_PATRIA })
+          .first().waitFor({ timeout: 8000 }).catch(() => {});
         const opcoes = page.locator('[role="option"], [role="menuitem"], [role="listbox"] li, .MuiAutocomplete-option, .dropdown-menu.show li, .dropdown-menu.show a, .select2-results__option, [class*="-option"], ul[class*="menu"] li')
           .filter({ visible: true }).filter({ hasText: RE_PATRIA });
         if (await opcoes.count()) {
@@ -495,9 +501,9 @@ function resumoPedido(req) {
 }
 
 // botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
-async function aplicarFiltro(page) {
-  const filtrar = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible')
-    .filter({ hasText: /^\s*(filtrar|buscar|pesquisar|gerar|aplicar|consultar|atualizar|ok|confirmar)\s*$/i }).first();
+async function aplicarFiltro(page, { soFiltrar = false } = {}) {
+  const re = soFiltrar ? /^\s*filtrar\s*$/i : /^\s*(filtrar|buscar|pesquisar|gerar|aplicar|consultar|atualizar|ok|confirmar)\s*$/i;
+  const filtrar = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible').filter({ hasText: re }).first();
   if (!(await filtrar.count())) return false;
   await filtrar.click().catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
@@ -764,6 +770,14 @@ async function main() {
             }
             const aviso = await lerAviso(page);
             if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex ||= aviso.download || null; }
+          }
+          if (!pg.periodo && !ex) {
+            // telas sem data (ex.: Quantidade de assinantes): o CSV só aparece depois de clicar em Filtrar
+            const f0 = FILA.length; const n0 = NOVAS.length;
+            if (await aplicarFiltro(page, { soFiltrar: true })) {
+              log(`  ${nome}: Filtrar (sem período)`);
+              ex = await aguardarResultado(page, f0, n0);
+            }
           }
           ex ||= await exportar(page);
           if (!ex || !ex.csv?.trim()) {
