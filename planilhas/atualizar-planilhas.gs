@@ -135,15 +135,26 @@ function escreverProfissionais_(d) {
   const primeira = titulo + 3; // 8 linhas de profissionais
   // ordem fixa = nomes das abas Prof. 1..8 (célula D2), para as abas individuais continuarem certas
   const ordem = [];
-  for (let i = 1; i <= 8; i++) { const sh = ss.getSheetByName(`Prof. ${i}`); ordem.push(sh ? norm_(sh.getRange('D2').getValue()).split(' ')[0] : ''); }
+  for (let i = 1; i <= 8; i++) {
+    const sh = ss.getSheetByName(`Prof. ${i}`);
+    const nome = sh ? norm_(sh.getRange('D2').getValue()).split(' ')[0] : '';
+    ordem.push(/^PROF/.test(nome) ? '' : nome); // aba ainda com nome de modelo = vaga livre
+  }
   const pros = (d.profissionais || []).filter((p) => num_(p.faturamento_total));
   const usados = new Set(); const linhas = {};
   ordem.forEach((nome, i) => { const p = pros.find((x) => nome && norm_(x.nome).split(' ')[0] === nome); if (p) { linhas[i] = p; usados.add(p); } });
   for (const p of pros) if (!usados.has(p)) { const livre = [...Array(8).keys()].find((i) => !linhas[i] && !ordem[i]); if (livre !== undefined) { linhas[livre] = p; usados.add(p); } }
   let n = 0;
   for (let i = 0; i < 8; i++) {
-    const p = linhas[i]; if (!p) continue;
+    const p = linhas[i];
     const r = primeira + i;
+    if (!p) {
+      // vaga sem profissional ainda com valores de modelo ("Prof. N"): limpa C:W para não somar na média/total
+      if (/^prof\.?\s*\d+$/i.test(String(g.getRange(r, 2).getValue()).trim())) {
+        for (let c = 3; c <= 23; c++) { const cel = g.getRange(r, c); if (!cel.getFormula()) cel.clearContent(); }
+      }
+      continue;
+    }
     const nomeAtual = String(g.getRange(r, 2).getValue());
     if (/^prof\.?\s*\d+$/i.test(nomeAtual.trim())) {
       // linha ainda com valores de modelo: limpa C:W (sem fórmulas) antes de escrever

@@ -169,9 +169,15 @@ async function analyze(files, escolhido = {}) {
   // ---- produtos vendidos no mês (relatório Vendas): valor real de produtos, que já está dentro das comandas
   let produtos = null;
   if (reports.vendas) {
+    // o relatório Vendas pode trazer serviços junto: produto é só o que não é serviço (relatório de Serviços do
+    // mês, serviços já gravados no painel, catálogo de SVA e serviços principais)
+    const salvos = await db.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'servicos'", y, m).catch(() => null);
+    let listaSalva = []; try { listaSalva = salvos ? ((typeof salvos.data === 'string' ? JSON.parse(salvos.data) : salvos.data)?.lista || []) : []; } catch {}
+    const nomesServico = new Set([...servicos.map((x) => x.nome), ...listaSalva.map((x) => x.nome), ...extrasCatalog, ...CORE_SERVICES].map(serviceKey));
+    const ehServico = (n) => nomesServico.has(serviceKey(n)) || /^(CORTE|CABELO|BARBA|SOBRANCELHA|PEZINHO|BIGODE|LUZES|PLATINAD|SELAGEM|ALISAMENTO|HID|PIG|DEP|SPA|BARBOTERAPIA|LAVAGEM|CONE|RELAXAMENTO|PROGRESSIVA|MANICURE|PEDICURE)/.test(normalize(n));
     const itens = reports.vendas
       .map((r) => ({ nome: r.ITEM ?? r.NOME, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) }))
-      .filter((i) => i.nome && normalize(i.nome) !== 'TOTAL' && (i.valor || i.quantidade));
+      .filter((i) => i.nome && normalize(i.nome) !== 'TOTAL' && (i.valor || i.quantidade) && !ehServico(i.nome));
     produtos = { total: round2(itens.reduce((s, i) => s + i.valor, 0)), quantidade: itens.reduce((s, i) => s + i.quantidade, 0), itens };
   }
 
