@@ -693,7 +693,7 @@ function ChartTile({ p, accent, reduced }: { p: BarberBentoProps; accent: string
 function CompositionTile({ items, accent, accent2 }: { items: { label: string; value: number }[]; accent: string; accent2: string }) {
   const mounted = useMounted();
   const total = items.reduce((s, a) => s + a.value, 0);
-  const colors = [accent, accent2, "oklch(0.92 0.04 90)", "oklch(0.62 0.02 80)", "oklch(0.42 0.015 80)"];
+  const colors = [accent, accent2, "oklch(0.92 0.04 90)", "oklch(0.62 0.02 80)", "oklch(0.42 0.015 80)", "oklch(0.55 0.12 150)"];
   const [hover, setHover] = React.useState<number | null>(null);
 
   return (

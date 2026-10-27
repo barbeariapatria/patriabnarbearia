@@ -2,7 +2,8 @@ const { db, getAllSettings } = require('./db');
 
 const WEEKDAYS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
 const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-const FIELDS = ['servicos', 'produtos', 'novas_assinaturas', 'sva', 'recorrencia'];
+// "bar" é faturamento da barbearia, mas nunca dos profissionais (não entra em comissão)
+const FIELDS = ['servicos', 'produtos', 'novas_assinaturas', 'sva', 'recorrencia', 'bar'];
 
 const pad = (n) => String(n).padStart(2, '0');
 const iso = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
@@ -139,10 +140,11 @@ async function proStats(y, m) {
       servicos_realizados: r.servicos_realizados || 0,
       venda_produtos: r.venda_produtos || 0,
       qtd_produtos: r.qtd_produtos || 0,
+      bar: r.bar || 0,
       extras: extrasOf(r),
     }));
   const withData = list.filter((r) => r.has_data);
-  const numeric = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos'];
+  const numeric = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos', 'bar'];
   const total = {}; const media = {};
   for (const k of numeric) {
     total[k] = round2(withData.reduce((s, r) => s + r[k], 0));
@@ -168,7 +170,7 @@ async function proYear(y) {
     mo.profissionais[r.name] = r.faturamento_total;
   }
   const daily = await db.all(`
-    SELECT CAST(substr(date, 6, 2) AS INTEGER) AS mes, SUM(servicos + produtos + novas_assinaturas + sva + recorrencia) AS total
+    SELECT CAST(substr(date, 6, 2) AS INTEGER) AS mes, SUM(servicos + produtos + novas_assinaturas + sva + recorrencia + bar) AS total
     FROM daily_revenue WHERE substr(date, 1, 4) = ? GROUP BY mes`, String(y));
   for (const d of daily) months[d.mes - 1].faturamento_unidade = round2(d.total);
   return { ano: y, meses: months };
@@ -195,7 +197,7 @@ function eachDay(de, ate, fn) {
 }
 
 async function sumRange(de, ate) {
-  const r = await db.get(`SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia), 0) AS total
+  const r = await db.get(`SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia + bar), 0) AS total
     FROM daily_revenue WHERE date >= ? AND date <= ?`, de, ate);
   return round2(Number(r?.total || 0));
 }
@@ -269,17 +271,17 @@ async function proStatsRange(deIn, ateIn) {
     const p = byPro.get(r.id) || {
       professional_id: r.id, name: r.name, active: !!r.active, has_data: true, meses: 0,
       faturamento_total: 0, faturamento_assinatura: 0, comissao: 0, clientes_atendidos: 0, geracao_demanda: 0,
-      servicos_realizados: 0, venda_produtos: 0, qtd_produtos: 0, extras: {}, _pagos: 0,
+      servicos_realizados: 0, venda_produtos: 0, qtd_produtos: 0, bar: 0, extras: {}, _pagos: 0,
     };
     p.meses++;
-    for (const k of ['faturamento_total', 'faturamento_assinatura', 'comissao', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos']) p[k] = round2(p[k] + (r[k] || 0));
+    for (const k of ['faturamento_total', 'faturamento_assinatura', 'comissao', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos', 'bar']) p[k] = round2(p[k] + (r[k] || 0));
     // atendimentos pagos no mês = faturamento ÷ ticket; sem ticket, usa os clientes
     p._pagos += r.ticket_medio ? r.faturamento_total / r.ticket_medio : (r.clientes_atendidos || 0);
     for (const [k, v] of Object.entries(extrasOf(r))) p.extras[k] = (p.extras[k] || 0) + Number(v || 0);
     byPro.set(r.id, p);
   }
   const list = [...byPro.values()].map(({ _pagos, ...p }) => ({ ...p, ticket_medio: _pagos ? round2(p.faturamento_total / _pagos) : 0 }));
-  const numeric = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos'];
+  const numeric = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos', 'bar'];
   const total = {}; const media = {};
   for (const k of numeric) {
     total[k] = round2(list.reduce((a, r) => a + r[k], 0));

@@ -15,6 +15,7 @@ const ALIASES = {
   sva: ['sva', 'servicos_adicionais', 'valor_sva', 'extras_total'],
   recorrencia: ['recorrencia', 'recorrência', 'recurring', 'renovacao', 'valor_recorrencia'],
   comissao: ['comissao', 'comissão', 'commission'],
+  bar: ['bar', 'valor_bar', 'consumo', 'bebidas'],
   clientes: ['clientes', 'clientes_atendidos', 'customers', 'qtd_clientes'],
   novo_cliente: ['novo_cliente', 'new_customer', 'primeira_visita', 'cliente_novo'],
   geracao_demanda: ['geracao_demanda', 'demanda'],
@@ -83,8 +84,9 @@ async function ensureMonthly(q, proId, y, m) {
 }
 
 // Interpreta o payload e devolve o "plano" de alterações (usado também no modo simulação)
-function parseSale(p, catalogNames) {
-  const values = { servicos: 0, produtos: 0, novas_assinaturas: 0, sva: 0, recorrencia: 0 };
+function parseSale(p, catalogNames, barCatalog = []) {
+  const values = { servicos: 0, produtos: 0, novas_assinaturas: 0, sva: 0, recorrencia: 0, bar: 0 };
+  const isBar = (nome, tipo) => /\b(BAR|BEBIDA|BEBIDAS|CONSUMO)\b/.test(normalize(tipo)) || barCatalog.some((c) => ` ${normalize(nome)} `.includes(` ${normalize(c)}`));
   const extras = {};
   let qtdServicos = 0; let qtdProdutos = 0;
   const catalog = (catalogNames || []).map((n) => [normalize(n), n]);
@@ -102,6 +104,7 @@ function parseSale(p, catalogNames) {
       const match = catalog.find(([key]) => key === normalize(nome));
       let kind = classifyItem(it);
       if (match && kind === 'servicos') kind = 'sva'; // serviço adicional do catálogo conta como SVA
+      if (isBar(nome, it.tipo || it.type || it.categoria || '')) kind = 'bar'; // bar: da barbearia, não do barbeiro
       values[kind] += unit;
       if (kind === 'produtos') qtdProdutos += qty; else if (kind === 'servicos' || kind === 'sva') qtdServicos += qty;
       if (match) extras[match[1]] = (extras[match[1]] || 0) + qty;
@@ -117,12 +120,13 @@ function parseSale(p, catalogNames) {
     }
   }
   const total = Object.values(values).reduce((s, v) => s + v, 0);
+  const totalProfissional = total - values.bar; // o barbeiro não ganha comissão do bar
   const novo = pick(p, 'novo_cliente');
   return {
     date: toDate(pick(p, 'date')),
     profissional: pick(p, 'profissional'),
     profissional_id_externo: p.profissional_id || p.professional_id || p.barbeiro_id,
-    values, total: round2(total), extras,
+    values, total: round2(total), total_profissional: round2(totalProfissional), extras,
     comissao: toNumber(pick(p, 'comissao')),
     clientes: pick(p, 'clientes') !== undefined ? toNumber(pick(p, 'clientes')) : 1,
     geracao_demanda: pick(p, 'geracao_demanda') !== undefined ? toNumber(pick(p, 'geracao_demanda')) : (novo === true || novo === 'true' || novo === 1 || novo === 'sim' ? 1 : 0),
@@ -133,39 +137,39 @@ function parseSale(p, catalogNames) {
 async function applySale(q, plan, sign) {
   const [y, m] = plan.date.split('-').map(Number);
   const v = plan.values;
-  await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
-    VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
+  await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, bar, status, updated_at)
+    VALUES(?, ?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
     ON CONFLICT(date) DO UPDATE SET servicos = daily_revenue.servicos + excluded.servicos, produtos = daily_revenue.produtos + excluded.produtos,
       novas_assinaturas = daily_revenue.novas_assinaturas + excluded.novas_assinaturas, sva = daily_revenue.sva + excluded.sva,
-      recorrencia = daily_revenue.recorrencia + excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
-  plan.date, sign * v.servicos, sign * v.produtos, sign * v.novas_assinaturas, sign * v.sva, sign * v.recorrencia);
+      recorrencia = daily_revenue.recorrencia + excluded.recorrencia, bar = daily_revenue.bar + excluded.bar, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
+  plan.date, sign * v.servicos, sign * v.produtos, sign * v.novas_assinaturas, sign * v.sva, sign * v.recorrencia, sign * (v.bar || 0));
 
   if (!plan.profissional) return;
   const pro = await findOrCreatePro(q, plan.profissional, plan.profissional_id_externo);
   const row = await ensureMonthly(q, pro.id, y, m);
   const extras = JSON.parse(row.extras || '{}');
   for (const [k, n] of Object.entries(plan.extras)) extras[k] = Math.max(0, (extras[k] || 0) + sign * n);
-  const fat = row.faturamento_total + sign * plan.total;
+  const fat = row.faturamento_total + sign * (plan.total_profissional ?? plan.total);
   const clientes = Math.max(0, row.clientes_atendidos + sign * plan.clientes);
   await q.run(`UPDATE professional_monthly SET
       faturamento_total = ?, faturamento_assinatura = faturamento_assinatura + ?, comissao = comissao + ?,
       clientes_atendidos = ?, geracao_demanda = MAX(0, geracao_demanda + ?), servicos_realizados = MAX(0, servicos_realizados + ?),
-      venda_produtos = venda_produtos + ?, qtd_produtos = MAX(0, qtd_produtos + ?), ticket_medio = ?, extras = ?, updated_at = CURRENT_TIMESTAMP
+      venda_produtos = venda_produtos + ?, qtd_produtos = MAX(0, qtd_produtos + ?), bar = MAX(0, bar + ?), ticket_medio = ?, extras = ?, updated_at = CURRENT_TIMESTAMP
     WHERE professional_id = ? AND year = ? AND month = ?`,
   round2(fat), sign * (v.novas_assinaturas + v.recorrencia), sign * plan.comissao, clientes, sign * plan.geracao_demanda,
-  sign * plan.qtd_servicos, sign * v.produtos, sign * plan.qtd_produtos, clientes ? round2(fat / clientes) : 0,
+  sign * plan.qtd_servicos, sign * v.produtos, sign * plan.qtd_produtos, sign * (v.bar || 0), clientes ? round2(fat / clientes) : 0,
   JSON.stringify(extras), pro.id, y, m);
 }
 
 async function applyDailyClose(q, p) {
   const date = toDate(pick(p, 'date'));
   const vals = {};
-  for (const f of ['servicos', 'produtos', 'novas_assinaturas', 'sva', 'recorrencia']) vals[f] = toNumber(pick(p, f));
-  await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
-    VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
+  for (const f of ['servicos', 'produtos', 'novas_assinaturas', 'sva', 'recorrencia', 'bar']) vals[f] = toNumber(pick(p, f));
+  await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, bar, status, updated_at)
+    VALUES(?, ?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)
     ON CONFLICT(date) DO UPDATE SET servicos = excluded.servicos, produtos = excluded.produtos, novas_assinaturas = excluded.novas_assinaturas,
-      sva = excluded.sva, recorrencia = excluded.recorrencia, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
-  date, vals.servicos, vals.produtos, vals.novas_assinaturas, vals.sva, vals.recorrencia);
+      sva = excluded.sva, recorrencia = excluded.recorrencia, bar = excluded.bar, status = 'REALIZADO', updated_at = CURRENT_TIMESTAMP`,
+  date, vals.servicos, vals.produtos, vals.novas_assinaturas, vals.sva, vals.recorrencia, vals.bar);
   return { date, ...vals };
 }
 
@@ -200,7 +204,7 @@ async function processOne(p, { dryRun = false, catalog } = {}) {
   if (kind === 'daily_close') return { event, kind, externalId, result: dryRun ? { date: toDate(pick(body, 'date')) } : await tx((q) => applyDailyClose(q, body)) };
   if (kind === 'pro_monthly') return { event, kind, externalId, result: dryRun ? { profissional: pick(body, 'profissional') } : await tx((q) => applyProMonthly(q, body)) };
 
-  const plan = parseSale(body, catalog || (await getSetting('extras_catalog')));
+  const plan = parseSale(body, catalog || (await getSetting('extras_catalog')), (await getSetting('bar_catalog')) || []);
   if (!dryRun) await tx((q) => applySale(q, plan, kind === 'cancel' ? -1 : 1));
   return { event, kind, externalId, result: plan };
 }

@@ -32,6 +32,7 @@
     { key: 'novas_assinaturas', label: 'Novas assinaturas', short: 'Novas assin.', color: '--s3' },
     { key: 'sva', label: 'SVA', color: '--s4' },
     { key: 'recorrencia', label: 'Recorrência', color: '--s5' },
+    { key: 'bar', label: 'Bar', color: '--s6' },
   ];
 
   const ICONS = {
@@ -863,8 +864,8 @@
     const todayIso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
     $('#pageSub').textContent = admin ? 'Clique nos valores para editar manualmente · salva automaticamente' : 'Somente leitura';
     view.innerHTML = `
-      <div class="grid g-6">
-        ${SERIES.map((s) => `<div class="card kpi fade-in"><div class="top"><div class="ico" style="background:${hexA(cssVar(s.color), 0.16)};color:${cssVar(s.color)}">${icon(s.key === 'produtos' ? 'bag' : s.key === 'servicos' ? 'scissors' : s.key === 'sva' ? 'spark' : s.key === 'recorrencia' ? 'refresh' : 'ticket')}</div>${s.label}</div><div class="v num">${brl(d.totais[s.key])}</div><div class="foot">${d.totais.total ? pct((d.totais[s.key] / d.totais.total) * 100) : '0%'} do total</div></div>`).join('')}
+      <div class="grid g-auto">
+        ${SERIES.map((s) => `<div class="card kpi fade-in"><div class="top"><div class="ico" style="background:${hexA(cssVar(s.color), 0.16)};color:${cssVar(s.color)}">${icon(s.key === 'produtos' ? 'bag' : s.key === 'servicos' ? 'scissors' : s.key === 'sva' ? 'spark' : s.key === 'recorrencia' ? 'refresh' : s.key === 'bar' ? 'cash' : 'ticket')}</div>${s.label}</div><div class="v num">${brl(d.totais[s.key])}</div><div class="foot">${d.totais.total ? pct((d.totais[s.key] / d.totais.total) * 100) : '0%'} do total</div></div>`).join('')}
         ${kpi({ label: 'Faturamento total', value: brl(d.totais.total), foot: ranged ? `${d.dias_no_periodo} dias · média ${brl(d.media_diaria)}/dia` : `Meta ${brl(d.mensal.meta)} · ${pct(d.mensal.percentual)}`, ic: 'cash', tone: 'accent' })}
       </div>
       <div class="card fade-in">
@@ -948,7 +949,7 @@
     const maxExtra = Math.max(1, ...list.flatMap((p) => catalog.map((k) => Number(p.extras[k] || 0))));
     const cols = [
       ['faturamento_total', 'Faturamento', brl], ['faturamento_assinatura', 'Fat. assinatura', brl], ['comissao', 'Comissão', brl], ['ticket_medio', 'Ticket médio', brl],
-      ['clientes_atendidos', 'Atendimentos', int], ['geracao_demanda', 'Geração de demanda', int], ['servicos_realizados', 'Serviços', int], ['venda_produtos', 'Venda produtos', brl], ['qtd_produtos', 'Qtd. produtos', int],
+      ['clientes_atendidos', 'Atendimentos', int], ['geracao_demanda', 'Geração de demanda', int], ['servicos_realizados', 'Serviços', int], ['venda_produtos', 'Venda produtos', brl], ['qtd_produtos', 'Qtd. produtos', int], ['bar', 'Bar (fora)', brl],
     ];
 
     view.innerHTML = `
@@ -999,7 +1000,7 @@
           <tfoot><tr><td>Média</td>${cols.map(([k, , f]) => `<td class="r num">${f(A[k])}</td>`).join('')}</tr>
             <tr><td>Total</td>${cols.map(([k, , f]) => `<td class="r num">${k === 'ticket_medio' ? '—' : f(T[k])}</td>`).join('')}</tr></tfoot>
         </table></div>
-        <p class="muted" style="font-size:12px;margin:10px 0 0">Valores em destaque indicam o melhor resultado da equipe no indicador.</p>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">Valores em destaque indicam o melhor resultado da equipe no indicador. O faturamento dos profissionais não inclui os itens do bar ("Bar (fora)" mostra quanto foi descontado), porque o bar não entra na comissão.</p>
       </div>
 
       ${agendaTable(rep?.agenda)}
@@ -1142,6 +1143,7 @@
           ${f('faturamento_total', 'Faturamento total (R$)')}${f('faturamento_assinatura', 'Faturamento de assinatura (R$)')}${f('comissao', 'Comissão (R$)')}
           ${f('ticket_medio', 'Ticket médio (R$) — vazio = automático')}${f('clientes_atendidos', 'Atendimentos', false)}${f('geracao_demanda', 'Geração de demanda (novos + SP)', false)}
           ${f('servicos_realizados', 'Serviços realizados', false)}${f('venda_produtos', 'Venda de produtos (R$)')}${f('qtd_produtos', 'Qtd. de produtos', false)}
+          ${f('bar', 'Bar nas comandas dele (R$) — já fora do faturamento')}
         </div>
         <h4 style="font-size:14px;margin:8px 0 12px">Serviços adicionais (quantidade)</h4>
         <div class="form-grid g3">${extras.map((k) => `<div class="field"><label>${esc(k)}</label><input class="input input-sm num" data-extra="${esc(k)}" value="${p.extras?.[k] ?? ''}" inputmode="numeric" placeholder="0"></div>`).join('')}</div></form>`,
@@ -1238,6 +1240,15 @@
             <div class="chips" id="cfExtras"></div>
           </div>
           <div class="card fade-in">
+            <div class="card-h"><h3>${icon('cash')} Bar</h3></div>
+            <p class="muted" style="margin:0 0 12px;font-size:13px">O bar conta no faturamento da barbearia, mas <b>sai do faturamento dos barbeiros</b> (não entra em comissão). Um item é do bar quando o nome contém uma destas palavras:</p>
+            <div style="display:flex;gap:8px;margin-bottom:12px"><input class="input" id="cfBar" placeholder="ex.: HEINEKEN"><button class="btn" id="cfBarAdd" aria-label="Adicionar item do bar">${icon('plus')}</button></div>
+            <div class="chips" id="cfBars"></div>
+            <p class="muted" style="margin:16px 0 8px;font-size:13px">Usuários do CashBarber usados só para comandas de consumo (vão inteiros para o bar e saem do ranking):</p>
+            <div style="display:flex;gap:8px;margin-bottom:12px"><input class="input" id="cfBarUser" placeholder="ex.: Consumo"><button class="btn" id="cfBarUserAdd" aria-label="Adicionar usuário de consumo">${icon('plus')}</button></div>
+            <div class="chips" id="cfBarUsers"></div>
+          </div>
+          <div class="card fade-in">
             <div class="card-h"><h3>${icon('spark')} Dados de demonstração</h3></div>
             <p class="muted" style="margin:0 0 14px;font-size:13px">Gera faturamento diário fictício para ${MONTHS[state.m - 1]} ${state.y} (marcado como DEMO) para apresentar o painel antes da integração.</p>
             <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" id="demoGen">${icon('play')} Gerar para ${MONTHS[state.m - 1]}</button><button class="btn btn-danger" id="demoClr">${icon('trash')} Remover todos os dados demo</button></div>
@@ -1280,7 +1291,17 @@
     const drawHols = () => { $('#cfHols').innerHTML = holidays.map((h) => `<span class="chip">${h.split('-').reverse().join('/')}<span class="x" data-h="${h}" role="button" aria-label="Remover">✕</span></span>`).join('') || '<span class="muted" style="font-size:12.5px">Nenhum feriado cadastrado</span>'; $$('#cfHols .x').forEach((x) => x.onclick = () => { holidays = holidays.filter((h) => h !== x.dataset.h); drawHols(); }); };
     const drawExtras = () => { $('#cfExtras').innerHTML = extras.map((h) => `<span class="chip">${esc(h)}<span class="x" data-e="${esc(h)}" role="button" aria-label="Remover">✕</span></span>`).join(''); $$('#cfExtras .x').forEach((x) => x.onclick = () => { extras = extras.filter((h) => h !== x.dataset.e); drawExtras(); saveExtras(); }); };
     const saveExtras = () => api('/api/admin/config', { method: 'PUT', body: { extras_catalog: extras } }).then(() => toast('Catálogo atualizado')).catch((e) => toast(e.message, 'err'));
-    drawDays(); drawHols(); drawExtras(); drawMetas();
+    // Bar: catálogo e usuários de consumo (salvam na hora)
+    let barCat = [...(c.bar_catalog || [])]; let barUsers = [...(c.bar_profissionais || [])];
+    const saveBar = () => api('/api/admin/config', { method: 'PUT', body: { bar_catalog: barCat, bar_profissionais: barUsers } }).then(() => toast('Bar atualizado')).catch((e) => toast(e.message, 'err'));
+    const chipList = (el, list, onRemove) => { $(el).innerHTML = list.map((h) => `<span class="chip">${esc(h)}<span class="x" data-v="${esc(h)}" role="button" aria-label="Remover ${esc(h)}">✕</span></span>`).join('') || '<span class="muted" style="font-size:12.5px">Nenhum</span>'; $$(`${el} .x`).forEach((x) => { x.onclick = () => onRemove(x.dataset.v); }); };
+    const drawBar = () => {
+      chipList('#cfBars', barCat, (v) => { barCat = barCat.filter((h) => h !== v); drawBar(); saveBar(); });
+      chipList('#cfBarUsers', barUsers, (v) => { barUsers = barUsers.filter((h) => h !== v); drawBar(); saveBar(); });
+    };
+    $('#cfBarAdd').onclick = () => { const v = $('#cfBar').value.trim().toUpperCase(); if (v && !barCat.includes(v)) { barCat.push(v); $('#cfBar').value = ''; drawBar(); saveBar(); } };
+    $('#cfBarUserAdd').onclick = () => { const v = $('#cfBarUser').value.trim(); if (v && !barUsers.includes(v)) { barUsers.push(v); $('#cfBarUser').value = ''; drawBar(); saveBar(); } };
+    drawDays(); drawHols(); drawExtras(); drawMetas(); drawBar();
     $('#cfHolAdd').onclick = () => { const v = $('#cfHol').value; if (v && !holidays.includes(v)) { holidays.push(v); holidays.sort(); drawHols(); } };
     $('#cfExtraAdd').onclick = () => { const v = $('#cfExtra').value.trim().toUpperCase(); if (v && !extras.includes(v)) { extras.push(v); $('#cfExtra').value = ''; drawExtras(); saveExtras(); } };
     $('#cfSave').onclick = async () => {
@@ -1540,7 +1561,7 @@
   }
 
   // ============================================================ Admin · Importar CashBarber
-  const REPORT_LABEL = { comandas: 'Comandas', agendamentos: 'Agendamentos', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos', equipe: 'Equipe', vendas: 'Vendas (produtos)' };
+  const REPORT_LABEL = { itens: 'Itens por profissional', vendas: 'Vendas (produtos)', comandas: 'Comandas', agendamentos: 'Agendamentos', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos', equipe: 'Equipe', vendas: 'Vendas (produtos)' };
 
   async function viewAdminImport(view) {
     const { ultima } = await api('/api/admin/importar');
@@ -1632,6 +1653,14 @@
             ${box('Agendamentos', int(ag.totais.total))}${box('Finalizados', `${int(ag.totais.finalizados)} · ${pct((ag.totais.finalizados / ag.totais.total) * 100)}`)}
             ${box('Cancelados / faltas', `${int(ag.totais.cancelados)} / ${int(ag.totais.faltas)}`)}${box('Pelo app · assinantes', `${pct((ag.totais.app / ag.totais.total) * 100)} · ${pct((ag.totais.clube / ag.totais.total) * 100)}`)}
           </div>` : ''}
+          ${plan.bar ? `<h4 style="font-size:14px;margin:20px 0 10px">Bar (fora do faturamento dos profissionais)</h4>
+            <div class="grid g-4" style="gap:12px">
+              ${box('Bar no mês', brl(plan.bar.total || 0))}
+              ${box('Comandas só de consumo', brl(plan.bar.consumo || 0))}
+              ${box('Descontado dos barbeiros', brl(plan.bar.descontado_dos_profissionais || 0))}
+              ${box('Itens do bar vendidos', plan.bar.quantidade != null ? int(plan.bar.quantidade) : '—')}
+            </div>
+            ${plan.bar.sem_atribuicao > 0 ? `<div class="banner" style="margin-top:12px">${icon('alert')}<div class="grow"><b>${brl(plan.bar.sem_atribuicao)}</b> de itens do bar estão em comandas de barbeiros e ainda não puderam ser descontados de cada um. Envie também o relatório de <b>itens por profissional</b> do CashBarber para tirar esse valor do faturamento certo.</div></div>` : ''}` : ''}
           ${eq ? `<h4 style="font-size:14px;margin:20px 0 10px">Equipe no CashBarber</h4>
             <div class="chips">${eq.profissionais.map((p) => `<span class="chip ${p.existente ? '' : 'on'}" title="${esc(p.nome_completo)} · ID ${esc(p.id_cashbarber)}">${esc(p.nome)}${p.existente ? '' : ' · novo'}</span>`).join('')}</div>
             ${eq.inativar.length ? `<p class="muted" style="font-size:12.5px;margin:10px 0 0">Não estão no cadastro do CashBarber e ficarão inativos: <b style="color:var(--text)">${eq.inativar.map((p) => esc(p.nome)).join(', ')}</b> (o histórico é mantido).</p>` : ''}

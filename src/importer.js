@@ -51,6 +51,8 @@ function detect(rows) {
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
   if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
+  // itens vendidos com o profissional de cada um (para tirar o bar do faturamento de cada barbeiro)
+  if (k.includes('PROFISSIONAL') && ['ITEM', 'PRODUTO', 'DESCRICAO', 'NOME DO ITEM', 'SERVICO/PRODUTO'].some((c) => k.includes(c)) && k.some((c) => c.startsWith('VALOR'))) return 'itens';
   if ((k.includes('ITEM') || k.includes('NOME')) && k.includes('QUANTIDADE') && k.includes('VALOR') && k.length <= 4) return 'vendas';
   return null;
 }
@@ -64,6 +66,12 @@ const NEW_CLIENT = /NOV[OA] CADASTRO|CADASTRO NOV[OA]|CLIENTE NOV[OA]/;
 // Nomes do CashBarber x catálogo do painel (ex.: "Depilação de nariz" = "DEP. NARIZ")
 const serviceKey = (n) => normalize(n).replace(/\bDEPILACAO( DE)?\b/g, 'DEP').replace(/\bHIDRATACAO( DE)?\b/g, 'HID')
   .replace(/\bPIGMENTACAO( DE)?\b/g, 'PIG').replace(/\s+/g, '');
+
+// Bar: item do catálogo (contém a palavra) ou tipo/categoria "bar"/"bebida"
+const isBarItem = (nome, catalog, tipo = '') => {
+  const n = ` ${normalize(nome)} `; const t = normalize(tipo);
+  return /\b(BAR|BEBIDA|BEBIDAS|CONSUMO)\b/.test(t) || catalog.some((c) => n.includes(` ${normalize(c)} `) || n.includes(` ${normalize(c)}`));
+};
 
 const monthsOf = (dates) => [...new Set(dates.map((d) => d.slice(0, 7)))].sort();
 
@@ -98,7 +106,14 @@ async function analyze(files, escolhido = {}) {
     const ds = list.map((x) => x.date).sort();
     periodos[k] = { de: ds[0], ate: ds[ds.length - 1], texto: `${fmt(ds[0])} a ${fmt(ds[ds.length - 1])}` };
   }
-  const months = monthsOf([...comandas, ...agendamentos].map((x) => x.date));
+  const itensPro = (reports.itens || []).map((r) => {
+    const valorKey = Object.keys(r).find((c) => c === 'VALOR TOTAL') || Object.keys(r).find((c) => c.startsWith('VALOR'));
+    return {
+      pro: r.PROFISSIONAL, nome: r.ITEM ?? r.PRODUTO ?? r.DESCRICAO ?? r['NOME DO ITEM'] ?? r['SERVICO/PRODUTO'],
+      tipo: r.TIPO ?? r.CATEGORIA ?? '', valor: money(r[valorKey]), date: brDate(r['DATA E HORA'] ?? r.DATA),
+    };
+  }).filter((i) => i.nome && i.valor);
+  const months = monthsOf([...comandas, ...agendamentos, ...itensPro.filter((i) => i.date)].map((x) => x.date));
   if (months.length > 1) {
     throw new Error(`Os arquivos cobrem mais de um mês (${months.map((k) => `${MONTHS[Number(k.slice(5)) - 1]}/${k.slice(0, 4)}`).join(', ')}). No CashBarber, exporte um mês por vez (do dia 1 ao último dia do mês).`);
   }
@@ -107,7 +122,7 @@ async function analyze(files, escolhido = {}) {
     const [dy, dm] = months[0].split('-').map(Number);
     throw new Error(`Os arquivos são de ${MONTHS[dm - 1]}/${dy}, mas o mês escolhido é ${MONTHS[em - 1]}/${ey}. Escolha ${MONTHS[dm - 1]}/${dy} ou envie os arquivos do mês certo.`);
   }
-  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas'].some((k) => reports[k]);
+  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens'].some((k) => reports[k]);
   if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Vendas, Assinantes e Cancelamentos não trazem datas.');
   const [y, m] = months.length ? months[0].split('-').map(Number) : (needsMonth || reports.equipe ? [ey, em] : [null, null]);
   if (y && m) periodos.mes = { de: iso(y, m, 1), ate: iso(y, m, daysInMonth(y, m)), texto: `${MONTHS[m - 1]}/${y}` };
@@ -166,6 +181,19 @@ async function analyze(files, escolhido = {}) {
     if (item.sva) svaTotal += item.faturado;
   }
 
+  // ---- bar: catálogo de itens e usuários do CashBarber usados só para consumo
+  const barCatalog = (await getSetting('bar_catalog')) || [];
+  const barUsers = ((await getSetting('bar_profissionais')) || []).map(normalize);
+  const isBarUser = (nome) => barUsers.includes(normalize(nome));
+  let barVendas = null;
+  // bar por profissional (relatório de itens): sai do faturamento de cada barbeiro
+  const barPorPro = new Map(); let barItensTotal = 0;
+  for (const i of itensPro) {
+    if (!isBarItem(i.nome, barCatalog, i.tipo)) continue;
+    barPorPro.set(i.pro, (barPorPro.get(i.pro) || 0) + i.valor);
+    barItensTotal += i.valor;
+  }
+
   // ---- produtos vendidos no mês (relatório Vendas): valor real de produtos, que já está dentro das comandas
   let produtos = null;
   if (reports.vendas) {
@@ -179,7 +207,10 @@ async function analyze(files, escolhido = {}) {
     const itens = reports.vendas
       .map((r) => ({ nome: r.ITEM ?? r.NOME, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) }))
       .filter((i) => i.nome && normalize(i.nome) !== 'TOTAL' && (i.valor || i.quantidade) && !ehServico(i.nome));
-    produtos = { total: round2(itens.reduce((s, i) => s + i.valor, 0)), quantidade: itens.reduce((s, i) => s + i.quantidade, 0), itens };
+    const barItens = itens.filter((i) => isBarItem(i.nome, barCatalog));
+    const prodItens = itens.filter((i) => !barItens.includes(i));
+    produtos = { total: round2(prodItens.reduce((s, i) => s + i.valor, 0)), quantidade: prodItens.reduce((s, i) => s + i.quantidade, 0), itens: prodItens };
+    barVendas = { total: round2(barItens.reduce((s, i) => s + i.valor, 0)), quantidade: barItens.reduce((s, i) => s + i.quantidade, 0), itens: barItens };
   }
 
   // ---- financeiro (comandas)
@@ -199,25 +230,43 @@ async function analyze(files, escolhido = {}) {
     for (const r of reports.cancelamentos || []) { const d = brDate(r['DATA ASSINATURA']); if (d && r.CLIENTE && !created.has(normalize(r.CLIENTE))) created.set(normalize(r.CLIENTE), d); }
 
     const days = {};
-    for (let d = 1; d <= daysInMonth(y, m); d++) days[iso(y, m, d)] = { comandas: 0, novas_assinaturas: 0, recorrencia: 0 };
-    let novas = 0; let recorrentes = 0;
+    for (let d = 1; d <= daysInMonth(y, m); d++) days[iso(y, m, d)] = { comandas: 0, bar: 0, novas_assinaturas: 0, recorrencia: 0 };
+    let novas = 0; let recorrentes = 0; let barConsumo = 0;
     for (const c of comandas) {
       const day = days[c.date];
       if (c.tipo === 'ASSINATURA') {
         if (created.get(normalize(c.cliente)) === c.date) { day.novas_assinaturas += c.valor; novas++; } else { day.recorrencia += c.valor; recorrentes++; }
-      } else day.comandas += c.valor;
+      } else if (isBarUser(c.pro)) { day.bar += c.valor; barConsumo += c.valor; } else day.comandas += c.valor;
     }
+    // Bar dentro das comandas comuns (cliente/barbeiro): pelo relatório Vendas (total do mês) ou de itens por profissional
+    const barTotalMes = barVendas ? Math.max(barVendas.total, barConsumo) : barConsumo + barItensTotal;
+    const barNasComandas = Math.max(0, barTotalMes - barConsumo);
+    const comandasComuns = Object.values(days).reduce((t, d) => t + d.comandas, 0);
+    const barShare = comandasComuns > 0 ? Math.min(1, barNasComandas / comandasComuns) : 0;
+    // SVA e produtos passam a ser proporções do que sobra sem o bar
+    const baseSemBar = comandasComuns - barNasComandas;
+    if (servicos.length && baseSemBar > 0) {
+      svaShare = Math.min(1, svaTotal / baseSemBar);
+      prodShare = Math.max(0, Math.min(1 - svaShare, (baseSemBar - servTotal) / baseSemBar));
+    }
+    if (produtos && baseSemBar > 0) prodShare = Math.max(0, Math.min(1 - svaShare, produtos.total / baseSemBar));
     const diario = Object.entries(days)
-      .filter(([, v]) => v.comandas || v.novas_assinaturas || v.recorrencia)
+      .filter(([, v]) => v.comandas || v.bar || v.novas_assinaturas || v.recorrencia)
       .map(([date, v]) => {
-        const sva = round2(v.comandas * svaShare);
-        const produtos = round2(v.comandas * prodShare);
-        return { date, servicos: round2(v.comandas - sva - produtos), produtos, sva, novas_assinaturas: round2(v.novas_assinaturas), recorrencia: round2(v.recorrencia) };
+        const barDia = round2(v.bar + v.comandas * barShare);
+        const resto = v.comandas - (barDia - v.bar);
+        const sva = round2(resto * svaShare);
+        const produtos = round2(resto * prodShare);
+        return { date, servicos: round2(resto - sva - produtos), produtos, sva, novas_assinaturas: round2(v.novas_assinaturas), recorrencia: round2(v.recorrencia), bar: barDia };
       });
+    // centavos do arredondamento por dia: acerta no dia de maior bar, sem mudar o total do dia
+    const difBar = round2(barTotalMes - diario.reduce((t, d) => t + d.bar, 0));
+    const maiorBar = diario.reduce((a, d) => (!a || d.bar > a.bar ? d : a), null);
+    if (difBar && maiorBar && Math.abs(difBar) < 1) { maiorBar.bar = round2(maiorBar.bar + difBar); maiorBar.servicos = round2(maiorBar.servicos - difBar); }
 
     const byPro = new Map();
     for (const c of comandas) {
-      if (c.tipo === 'ASSINATURA' || NOT_PROFESSIONAL.includes(normalize(c.pro))) continue;
+      if (c.tipo === 'ASSINATURA' || NOT_PROFESSIONAL.includes(normalize(c.pro)) || isBarUser(c.pro)) continue;
       const p = byPro.get(c.pro) || { nome_cashbarber: c.pro, faturamento_total: 0, atendimentos: 0, pagas: 0, clientes: new Set(), novos: new Set() };
       p.faturamento_total += c.valor; p.atendimentos++;
       if (c.valor > 0) p.pagas++;
@@ -225,11 +274,16 @@ async function analyze(files, escolhido = {}) {
       if (NEW_CLIENT.test(normalize(c.cliente))) p.novos.add(normalize(c.cliente));
       byPro.set(c.pro, p);
     }
-    const profissionais = [...byPro.values()].map((p) => ({
-      nome_cashbarber: p.nome_cashbarber, ...resolve(p.nome_cashbarber),
-      faturamento_total: round2(p.faturamento_total), clientes_atendidos: p.atendimentos, clientes_unicos: p.clientes.size,
-      geracao_demanda: p.novos.size, ticket_medio: p.pagas ? round2(p.faturamento_total / p.pagas) : 0,
-    })).sort((a, b) => b.faturamento_total - a.faturamento_total);
+    const profissionais = [...byPro.values()].map((p) => {
+      const bar = round2(Math.min(p.faturamento_total, barPorPro.get(p.nome_cashbarber) || 0));
+      const liquido = round2(p.faturamento_total - bar);
+      return {
+        nome_cashbarber: p.nome_cashbarber, ...resolve(p.nome_cashbarber),
+        faturamento_total: liquido, bar, clientes_atendidos: p.atendimentos, clientes_unicos: p.clientes.size,
+        geracao_demanda: p.novos.size, ticket_medio: p.pagas ? round2(liquido / p.pagas) : 0,
+      };
+    }).sort((a, b) => b.faturamento_total - a.faturamento_total);
+    const barDescontado = round2(profissionais.reduce((t, p) => t + p.bar, 0));
 
     const sum = (k) => round2(diario.reduce((s, d) => s + d[k], 0));
     financeiro = {
@@ -238,12 +292,18 @@ async function analyze(files, escolhido = {}) {
         comandas: comandas.filter((c) => c.tipo !== 'ASSINATURA').length,
         cobrancas_assinatura: novas + recorrentes, novas_assinaturas_qtd: novas,
         faturamento_total: round2(comandas.reduce((s, c) => s + c.valor, 0)),
-        servicos: sum('servicos'), produtos: sum('produtos'), sva: sum('sva'),
+        servicos: sum('servicos'), produtos: sum('produtos'), sva: sum('sva'), bar: sum('bar'),
         novas_assinaturas: sum('novas_assinaturas'), recorrencia: sum('recorrencia'),
         sva_proporcional: servicos.length > 0,
       },
       diario,
       profissionais,
+      bar: {
+        total: sum('bar'), consumo: round2(barConsumo), nas_comandas: round2(barNasComandas),
+        descontado_dos_profissionais: barDescontado,
+        // bar que está em comandas de barbeiros e ainda não pôde ser atribuído a cada um (falta o relatório de itens)
+        sem_atribuicao: round2(Math.max(0, barNasComandas - barDescontado)),
+      },
     };
   }
 
@@ -325,6 +385,12 @@ async function analyze(files, escolhido = {}) {
     mes_detectado: months.length > 0, periodos,
     relatorios: Object.keys(reports), ignorados: ignored,
     equipe, financeiro, agenda, assinaturas, produtos,
+    bar: barVendas || financeiro?.bar || itensPro.length ? {
+      ...(financeiro?.bar || {}), itens: barVendas?.itens || [], quantidade: barVendas?.quantidade ?? null,
+      total: financeiro?.bar?.total ?? barVendas?.total ?? round2(barItensTotal),
+      por_profissional: [...barPorPro.entries()].map(([nome, valor]) => ({ nome_cashbarber: nome, ...resolve(nome), valor: round2(valor) })),
+      usuarios_consumo: barUsers.length ? (await getSetting('bar_profissionais')) : [],
+    } : null,
     servicos: servicos.length ? { lista: servicos, sva_total: round2(svaTotal), total: round2(servTotal) } : null,
   };
 }
@@ -358,8 +424,8 @@ async function apply(plan) {
     if (plan.financeiro) {
       await q.run('DELETE FROM daily_revenue WHERE date >= ? AND date <= ?', iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
       for (const d of plan.financeiro.diario) {
-        await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
-          VALUES(?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)`, d.date, d.servicos, d.produtos, d.novas_assinaturas, d.sva, d.recorrencia);
+        await q.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, bar, status, updated_at)
+          VALUES(?, ?, ?, ?, ?, ?, ?, 'REALIZADO', CURRENT_TIMESTAMP)`, d.date, d.servicos, d.produtos, d.novas_assinaturas, d.sva, d.recorrencia, d.bar || 0);
       }
       // o relatório é a fonte da verdade do mês: quem não aparece nele sai daquele mês
       const keep = [];
@@ -367,8 +433,8 @@ async function apply(plan) {
         const id = await ensurePro(p);
         await q.run('UPDATE professionals SET active = 1 WHERE id = ?', id);
         await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', id, y, m);
-        await q.run(`UPDATE professional_monthly SET faturamento_total = ?, clientes_atendidos = ?, geracao_demanda = ?, ticket_medio = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE professional_id = ? AND year = ? AND month = ?`, p.faturamento_total, p.clientes_atendidos, p.geracao_demanda, p.ticket_medio, id, y, m);
+        await q.run(`UPDATE professional_monthly SET faturamento_total = ?, bar = ?, clientes_atendidos = ?, geracao_demanda = ?, ticket_medio = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE professional_id = ? AND year = ? AND month = ?`, p.faturamento_total, p.bar || 0, p.clientes_atendidos, p.geracao_demanda, p.ticket_medio, id, y, m);
         keep.push(id);
       }
       for (const o of await q.all('SELECT professional_id FROM professional_monthly WHERE year = ? AND month = ?', y, m)) {
@@ -380,15 +446,36 @@ async function apply(plan) {
     // (o total de cada dia não muda; produtos já estavam dentro das comandas)
     if (plan.produtos && !plan.financeiro && y && m) {
       const dias = await q.all('SELECT * FROM daily_revenue WHERE date >= ? AND date <= ?', iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
-      const base = (d) => (Number(d.servicos) || 0) + (Number(d.produtos) || 0);
+      const base = (d) => (Number(d.servicos) || 0) + (Number(d.produtos) || 0) + (Number(d.bar) || 0);
       const soma = dias.reduce((s, d) => s + base(d), 0);
       if (soma > 0) {
-        const share = Math.min(1, plan.produtos.total / soma);
+        const barShare = Math.min(1, (plan.bar?.total || 0) / soma);
+        const share = Math.min(1 - barShare, plan.produtos.total / soma);
         for (const d of dias) {
           const prod = round2(base(d) * share);
-          await q.run('UPDATE daily_revenue SET servicos = ?, produtos = ?, updated_at = CURRENT_TIMESTAMP WHERE date = ?', round2(base(d) - prod), prod, d.date);
+          const bar = round2(base(d) * barShare);
+          await q.run('UPDATE daily_revenue SET servicos = ?, produtos = ?, bar = ?, updated_at = CURRENT_TIMESTAMP WHERE date = ?', round2(base(d) - prod - bar), prod, bar, d.date);
         }
       }
+    }
+    // Itens por profissional sem comandas no mesmo envio: tira o bar do faturamento já gravado de cada barbeiro
+    // (o valor bruto é refeito somando o bar descontado antes, então reimportar não desconta duas vezes)
+    if (plan.bar?.por_profissional?.length && !plan.financeiro && y && m) {
+      for (const p of plan.bar.por_profissional) {
+        const id = p.id || (await q.get('SELECT id FROM professionals WHERE lower(name) = lower(?)', p.nome))?.id;
+        const row = id && (await q.get('SELECT * FROM professional_monthly WHERE professional_id = ? AND year = ? AND month = ?', id, y, m));
+        if (!row) continue;
+        const bruto = (row.faturamento_total || 0) + (row.bar || 0);
+        const bar = round2(Math.min(bruto, p.valor));
+        const liquido = round2(bruto - bar);
+        const pagos = row.ticket_medio ? (row.faturamento_total || 0) / row.ticket_medio : 0;
+        await q.run('UPDATE professional_monthly SET faturamento_total = ?, bar = ?, ticket_medio = ?, updated_at = CURRENT_TIMESTAMP WHERE professional_id = ? AND year = ? AND month = ?',
+          liquido, bar, pagos ? round2(liquido / pagos) : row.ticket_medio, id, y, m);
+      }
+    }
+    if (plan.bar && y && m) {
+      const { por_profissional, ...resto } = plan.bar;
+      await saveReport(q, y, m, 'bar', { ...resto, por_profissional: (por_profissional || []).map(({ nome, valor }) => ({ nome, valor })) });
     }
     if (plan.produtos && y && m) await saveReport(q, y, m, 'produtos', plan.produtos);
 

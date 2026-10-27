@@ -74,7 +74,7 @@ const needShop = (req, res, next) => (access.canShop(req.access) ? next() : deny
 const needPros = (req, res, next) => (access.canPros(req.access) ? next() : deny(res));
 
 // Barbeiro que só vê os próprios números: filtra os profissionais e refaz totais/médias com o que sobrou
-const PRO_NUM = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos'];
+const PRO_NUM = ['faturamento_total', 'faturamento_assinatura', 'comissao', 'ticket_medio', 'clientes_atendidos', 'geracao_demanda', 'servicos_realizados', 'venda_produtos', 'qtd_produtos', 'bar'];
 function restrictStats(req, st) {
   if (!access.ownOnly(req.access)) return st;
   const own = st.profissionais.filter((p) => p.professional_id === req.access.professional_id);
@@ -201,10 +201,10 @@ app.put('/api/admin/diario/:date', auth.requireAdmin, wrap(async (req) => {
   const b = req.body || {};
   const v = (k) => webhook.toNumber(b[k]);
   const status = ['PREVISTO', 'REALIZADO'].includes(b.status) ? b.status : 'REALIZADO';
-  await db.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at)
-    VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(date) DO UPDATE SET servicos = excluded.servicos, produtos = excluded.produtos,
-    novas_assinaturas = excluded.novas_assinaturas, sva = excluded.sva, recorrencia = excluded.recorrencia, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
-  date, v('servicos'), v('produtos'), v('novas_assinaturas'), v('sva'), v('recorrencia'), status);
+  await db.run(`INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, bar, status, updated_at)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(date) DO UPDATE SET servicos = excluded.servicos, produtos = excluded.produtos,
+    novas_assinaturas = excluded.novas_assinaturas, sva = excluded.sva, recorrencia = excluded.recorrencia, bar = excluded.bar, status = excluded.status, updated_at = CURRENT_TIMESTAMP`,
+  date, v('servicos'), v('produtos'), v('novas_assinaturas'), v('sva'), v('recorrencia'), v('bar'), status);
   await webhook.notifyOutgoing('lancamento_manual');
   return { ok: true };
 }));
@@ -237,14 +237,14 @@ app.put('/api/admin/profissionais/:id/mensal', auth.requireAdmin, wrap(async (re
   const b = req.body || {};
   const n = (k) => webhook.toNumber(b[k]);
   await db.run(`INSERT INTO professional_monthly(professional_id, year, month, faturamento_total, faturamento_assinatura, comissao, ticket_medio,
-      clientes_atendidos, geracao_demanda, servicos_realizados, venda_produtos, qtd_produtos, extras, updated_at)
-    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      clientes_atendidos, geracao_demanda, servicos_realizados, venda_produtos, qtd_produtos, bar, extras, updated_at)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(professional_id, year, month) DO UPDATE SET faturamento_total = excluded.faturamento_total, faturamento_assinatura = excluded.faturamento_assinatura,
       comissao = excluded.comissao, ticket_medio = excluded.ticket_medio, clientes_atendidos = excluded.clientes_atendidos, geracao_demanda = excluded.geracao_demanda,
-      servicos_realizados = excluded.servicos_realizados, venda_produtos = excluded.venda_produtos, qtd_produtos = excluded.qtd_produtos, extras = excluded.extras,
+      servicos_realizados = excluded.servicos_realizados, venda_produtos = excluded.venda_produtos, qtd_produtos = excluded.qtd_produtos, bar = excluded.bar, extras = excluded.extras,
       updated_at = CURRENT_TIMESTAMP`,
   Number(req.params.id), y, m, n('faturamento_total'), n('faturamento_assinatura'), n('comissao'), b.ticket_medio ? n('ticket_medio') : null,
-  n('clientes_atendidos'), n('geracao_demanda'), n('servicos_realizados'), n('venda_produtos'), n('qtd_produtos'), JSON.stringify(b.extras || {}));
+  n('clientes_atendidos'), n('geracao_demanda'), n('servicos_realizados'), n('venda_produtos'), n('qtd_produtos'), n('bar'), JSON.stringify(b.extras || {}));
   return { ok: true };
 }));
 app.delete('/api/admin/profissionais/:id/mensal', auth.requireAdmin, wrap(async (req) => {
@@ -279,6 +279,8 @@ app.put('/api/admin/config', auth.requireAdmin, wrap(async (req) => {
     }
     await setSetting('metas_mes', clean);
   }
+  if (Array.isArray(b.bar_catalog)) await setSetting('bar_catalog', b.bar_catalog.map((x) => String(x).trim().toUpperCase()).filter(Boolean));
+  if (Array.isArray(b.bar_profissionais)) await setSetting('bar_profissionais', b.bar_profissionais.map((x) => String(x).trim()).filter(Boolean));
   if (b.outgoing_webhook_url !== undefined) {
     const u = String(b.outgoing_webhook_url).trim();
     if (u && !/^https?:\/\//i.test(u)) throw new Error('URL de saída deve começar com http:// ou https://');
@@ -458,7 +460,7 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
     const de = metrics.iso(y, m, 1); const ate = metrics.iso(y, m, metrics.daysInMonth(y, m));
     // Trava: o robô nunca troca o faturamento do mês por um total zerado ou muito menor do que o que já está gravado
     if (plan.financeiro) {
-      const atual = await db.get('SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia), 0) AS t FROM daily_revenue WHERE date >= ? AND date <= ?', de, ate);
+      const atual = await db.get('SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia + bar), 0) AS t FROM daily_revenue WHERE date >= ? AND date <= ?', de, ate);
       const novo = plan.financeiro.resumo.faturamento_total;
       const atualT = Number(atual?.t) || 0;
       // "forcar" (execução manual com substituir) libera a comparação com o atual; total zerado nunca passa
@@ -500,16 +502,16 @@ app.get('/api/robo/planilha', robotAuth, wrap(async (req) => {
   const y = Number(req.query.ano); const m = Number(req.query.mes);
   if (!y || !m || m < 1 || m > 12) throw new Error('Informe ano e mes');
   const de = metrics.iso(y, m, 1); const ate = metrics.iso(y, m, metrics.daysInMonth(y, m));
-  const diario = await db.all('SELECT date, servicos, produtos, novas_assinaturas, sva, recorrencia, status FROM daily_revenue WHERE date >= ? AND date <= ? ORDER BY date', de, ate);
+  const diario = await db.all('SELECT date, servicos, produtos, novas_assinaturas, sva, recorrencia, bar, status FROM daily_revenue WHERE date >= ? AND date <= ? ORDER BY date', de, ate);
   const rep = async (kind) => {
     const r = await db.get('SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, kind);
     try { return r ? (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) : null; } catch { return null; }
   };
   const soma = (k) => Math.round(diario.reduce((t, d) => t + (Number(d[k]) || 0), 0) * 100) / 100;
-  const total = soma('servicos') + soma('produtos') + soma('novas_assinaturas') + soma('sva') + soma('recorrencia');
+  const total = soma('servicos') + soma('produtos') + soma('novas_assinaturas') + soma('sva') + soma('recorrencia') + soma('bar');
   const assinaturas = await rep('assinaturas'); const unidade = (await rep('unidade')) || {};
   const pros = await db.all(`SELECT p.name AS nome, pm.faturamento_total, pm.faturamento_assinatura, pm.comissao, pm.ticket_medio, pm.clientes_atendidos,
-      pm.geracao_demanda, pm.servicos_realizados, pm.venda_produtos, pm.qtd_produtos
+      pm.geracao_demanda, pm.servicos_realizados, pm.venda_produtos, pm.qtd_produtos, pm.bar
     FROM professional_monthly pm JOIN professionals p ON p.id = pm.professional_id WHERE pm.year = ? AND pm.month = ? ORDER BY pm.faturamento_total DESC`, y, m);
   const ultima = await getSetting('ultima_importacao');
   return {
@@ -519,6 +521,7 @@ app.get('/api/robo/planilha', robotAuth, wrap(async (req) => {
       faturamento_assinatura: Math.round((soma('novas_assinaturas') + soma('recorrencia')) * 100) / 100,
       faturamento_avulso: Math.round((soma('servicos') + soma('sva')) * 100) / 100,
       faturamento_produtos: soma('produtos'),
+      faturamento_bar: soma('bar'),
       novas_assinaturas_valor: soma('novas_assinaturas'), recorrencia: soma('recorrencia'), sva: soma('sva'),
       assinantes: assinaturas?.ativos ?? assinaturas?.total ?? null,
       novos_assinantes: assinaturas?.novas_no_mes ?? null,

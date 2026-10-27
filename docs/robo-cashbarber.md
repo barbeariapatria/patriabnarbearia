@@ -76,3 +76,15 @@ reativar, basta clicar em *Enable workflow* em Actions.
 
 Riscos: código por SMS/e-mail ou captcha no login do CashBarber podem bloquear o robô; mudanças no site do
 CashBarber podem exigir ajuste no script. A importação manual de CSV continua disponível como alternativa.
+
+## Bar (fora do faturamento dos barbeiros)
+
+O bar é faturamento da barbearia, mas **não do barbeiro** (não entra em comissão). Os itens do bar aparecem na comanda
+do cliente, na comanda do barbeiro ou numa comanda só de consumo. O painel separa assim:
+
+- **Vendas (produtos):** itens cujo nome está no catálogo "Bar" (Admin → Metas e configurações) viram Bar, não produto.
+- **Comandas de consumo:** usuários do CashBarber marcados como "consumo" no mesmo lugar vão inteiros para o Bar.
+- **Itens por profissional:** para tirar o bar do faturamento de **cada** barbeiro, o robô precisa exportar um relatório
+  com uma linha por item vendido e o profissional (colunas: `Profissional`, `Item`/`Produto`, `Valor`, opcional `Data`).
+  Sem ele, a importação avisa quanto bar ainda está "sem atribuição" nas comandas dos barbeiros.
+- [ ] Encontrar no CashBarber o relatório de itens/vendas por profissional e incluir na exportação diária.

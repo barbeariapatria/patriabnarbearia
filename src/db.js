@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS daily_revenue (
   novas_assinaturas REAL NOT NULL DEFAULT 0,
   sva REAL NOT NULL DEFAULT 0,
   recorrencia REAL NOT NULL DEFAULT 0,
+  bar REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'PREVISTO',
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -215,6 +216,7 @@ CREATE TABLE IF NOT EXISTS professional_monthly (
   servicos_realizados INTEGER NOT NULL DEFAULT 0,
   venda_produtos REAL NOT NULL DEFAULT 0,
   qtd_produtos INTEGER NOT NULL DEFAULT 0,
+  bar REAL NOT NULL DEFAULT 0,
   extras TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (professional_id, year, month)
@@ -272,6 +274,7 @@ CREATE TABLE IF NOT EXISTS patria_daily_revenue (
   novas_assinaturas DOUBLE PRECISION NOT NULL DEFAULT 0,
   sva DOUBLE PRECISION NOT NULL DEFAULT 0,
   recorrencia DOUBLE PRECISION NOT NULL DEFAULT 0,
+  bar DOUBLE PRECISION NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'PREVISTO',
   updated_at TEXT DEFAULT ${PG_NOW}
 );
@@ -296,6 +299,7 @@ CREATE TABLE IF NOT EXISTS patria_professional_monthly (
   servicos_realizados INTEGER NOT NULL DEFAULT 0,
   venda_produtos DOUBLE PRECISION NOT NULL DEFAULT 0,
   qtd_produtos INTEGER NOT NULL DEFAULT 0,
+  bar DOUBLE PRECISION NOT NULL DEFAULT 0,
   extras TEXT NOT NULL DEFAULT '{}',
   updated_at TEXT DEFAULT ${PG_NOW},
   PRIMARY KEY (professional_id, year, month)
@@ -341,6 +345,12 @@ const DEFAULT_SETTINGS = {
   feriados: [],
   extras_catalog: DEFAULT_EXTRAS,
   outgoing_webhook_url: '',
+  // Itens do bar (contém a palavra): saem do faturamento dos barbeiros e não entram na comissão
+  bar_catalog: ['CERVEJA', 'CHOPP', 'CHOPE', 'HEINEKEN', 'BUDWEISER', 'STELLA', 'CORONA', 'SPATEN', 'AMSTEL', 'ORIGINAL', 'BRAHMA', 'SKOL',
+    'LONG NECK', 'REFRIGERANTE', 'COCA', 'GUARANA', 'SPRITE', 'FANTA', 'AGUA', 'SUCO', 'ENERGETICO', 'RED BULL', 'MONSTER',
+    'WHISKY', 'WHISKEY', 'DOSE', 'GIN', 'VODKA', 'CACHACA', 'CAIPIRINHA', 'DRINK', 'TONICA', 'CAFE', 'CAPUCCINO', 'CAPPUCCINO'],
+  // Usuários do CashBarber usados só para comandas de consumo (bar): saem do ranking dos profissionais
+  bar_profissionais: [],
 };
 
 const parse = (v) => { try { return JSON.parse(v); } catch { return v; } };
@@ -364,9 +374,23 @@ async function ensureSecret(key, bytes = 32) {
   return getSetting(key);
 }
 
+// Colunas acrescentadas depois da primeira versão (bancos já criados precisam recebê-las)
+const ADDED_COLUMNS = [
+  ['daily_revenue', 'bar', 'REAL NOT NULL DEFAULT 0', 'DOUBLE PRECISION NOT NULL DEFAULT 0'],
+  ['professional_monthly', 'bar', 'REAL NOT NULL DEFAULT 0', 'DOUBLE PRECISION NOT NULL DEFAULT 0'],
+];
+
 async function migrate() {
   const d = getDriver();
   await d.exec(d.kind === 'postgres' ? PG_SCHEMA : SCHEMA);
+  for (const [table, col, sqliteType, pgType] of ADDED_COLUMNS) {
+    if (d.kind === 'postgres') {
+      await d.exec(`ALTER TABLE patria_${table} ADD COLUMN IF NOT EXISTS ${col} ${pgType}`);
+    } else {
+      const cols = (await d.query(`PRAGMA table_info(${table})`, [])).rows.map((r) => r.name);
+      if (!cols.includes(col)) await d.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${sqliteType}`);
+    }
+  }
 }
 
 module.exports = { db, tx, getSetting, setSetting, getAllSettings, ensureSecret, migrate, databaseInfo, DEFAULT_EXTRAS };
