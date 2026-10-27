@@ -294,13 +294,22 @@ async function escolherFilial(page) {
         return { i };
       }).filter(Boolean);
   });
+  // código da filial também pode estar nas opções da própria tela
+  if (!FILIAL_ID) {
+    const v = await page.evaluate((re) => {
+      const r = new RegExp(re, 'i');
+      const o = [...document.querySelectorAll('option, [data-value], [data-id]')].find((e) => r.test(e.textContent || '') && (e.value || e.dataset.value || e.dataset.id));
+      return o ? (o.value || o.dataset.value || o.dataset.id) : null;
+    }, RE_PATRIA.source).catch(() => null);
+    if (v && !/^(todas?|0|-1)$/i.test(v)) { FILIAL_ID = /^\d+$/.test(v) ? Number(v) : v; FILIAL_ORIGEM = 'opções da tela'; log(`  Filial Village encontrada: código ${FILIAL_ID} (nas opções da tela)`); }
+  }
   if (!campos.length) return [];
   const mostra = (box) => box.evaluate((b) => (b.innerText || '').replace(/\s+/g, ' ').trim() + ' ' +
     [...b.querySelectorAll('input, select')].map((x) => (x.tagName === 'SELECT' ? [...x.selectedOptions].map((o) => o.text).join(',') : x.value)).join(' ')).catch(() => '');
   const feitos = [];
   for (const c of campos) {
     const box = page.locator(`[data-robo-filial="${c.i}"]`);
-    if (RE_PATRIA.test(await mostra(box))) { feitos.push('filial Village (já estava marcada)'); continue; }
+    if (RE_PATRIA.test(await mostra(box))) { feitos.push('botão Filial mostra Village'); continue; }
 
     // 2) <select> visível comum: escolhe pela opção
     const selVis = box.locator('select:visible').first();
@@ -331,8 +340,8 @@ async function escolherFilial(page) {
     }
     // 4) confere o que o botão mostra agora
     const agora = (await mostra(box)).slice(0, 80);
-    if (RE_PATRIA.test(agora)) feitos.push('filial Village (conferido na tela)');
-    else feitos.push(`FILIAL NÃO MARCADA — o campo mostra "${agora || 'vazio'}"`);
+    if (RE_PATRIA.test(agora)) feitos.push('botão Filial mostra Village');
+    else feitos.push(`botão Filial mostra "${agora.slice(0, 30) || 'vazio'}"`);
   }
   return feitos;
 }
@@ -371,7 +380,7 @@ async function conferirDatas(page, per) {
     if (t === 'date' || /^\d{2}\/\d{2}\/\d{4}$/.test(v.trim()) || /dd\/mm|data/i.test(`${await c.getAttribute('placeholder').catch(() => '')}`)) datas.push({ c, v: v.trim(), t });
     if (datas.length === 2) break;
   }
-  if (datas.length < 2) return null;
+  if (datas.length < 2 || datas[0].t !== datas[1].t) return null;
   const quer = datas[0].t === 'date' ? [per.deIso, per.ateIso] : [per.deBr, per.ateBr];
   if (datas[0].v === quer[0] && datas[1].v === quer[1]) return 'datas conferidas';
   for (const [k, d] of datas.entries()) {
@@ -391,6 +400,50 @@ async function conferirDatas(page, per) {
   await page.waitForTimeout(500);
   const depois = [await datas[0].c.inputValue().catch(() => ''), await datas[1].c.inputValue().catch(() => '')];
   return `datas digitadas (antes ${datas[0].v || 'vazio'} a ${datas[1].v || 'vazio'}, agora ${depois.join(' a ')})`;
+}
+
+// ---- filial por código: a página recebe do CashBarber a lista de filiais (com o código de cada uma). O robô
+// guarda o código da Village e, quando o pedido do filtro sai sem filial (id_filial=null = "todas"), coloca esse
+// código — o mesmo que escolher a Village no botão Filial.
+let FILIAL_ID = process.env.CASHBARBER_FILIAL_ID || null;
+let FILIAL_ORIGEM = FILIAL_ID ? 'CASHBARBER_FILIAL_ID' : null;
+function procurarFilial(obj, caminho) {
+  if (FILIAL_ID || !obj || typeof obj !== 'object') return;
+  if (Array.isArray(obj)) { for (const x of obj) procurarFilial(x, caminho); return; }
+  const nome = Object.entries(obj).find(([k, v]) => typeof v === 'string' && /nome|name|descricao|fantasia|razao|label|titulo|filial/i.test(k) && RE_PATRIA.test(v));
+  if (nome) {
+    const id = obj.id_filial ?? obj.filial_id ?? obj.idFilial ?? obj.id ?? obj.value ?? obj.codigo;
+    if (id != null && typeof id !== 'object') { FILIAL_ID = id; FILIAL_ORIGEM = `${caminho} ("${nome[1].slice(0, 40)}")`; return; }
+  }
+  for (const v of Object.values(obj)) if (v && typeof v === 'object') procurarFilial(v, caminho);
+}
+async function observarRespostas(resp) {
+  if (FILIAL_ID) return;
+  try {
+    const req = resp.request();
+    if (!['xhr', 'fetch'].includes(req.resourceType())) return;
+    if (!/json/i.test(resp.headers()['content-type'] || '')) return;
+    const u = new URL(resp.url());
+    if (u.origin !== new URL(BASE).origin && !/cashbarber/i.test(u.hostname)) return;
+    const texto = await resp.text();
+    if (texto.length > 3_000_000 || !RE_PATRIA.test(texto)) return;
+    procurarFilial(JSON.parse(texto), u.pathname);
+    if (FILIAL_ID) log(`  Filial Village encontrada: código ${FILIAL_ID} (em ${FILIAL_ORIGEM})`);
+  } catch {}
+}
+// coloca a filial nos pedidos de relatório que saem sem ela (só campos de filial vazios; o resto fica igual)
+async function ajustarPedido(route) {
+  const req = route.request();
+  if (!FILIAL_ID || req.method() !== 'POST') return route.continue();
+  const corpo = req.postData() || '';
+  let obj; try { obj = JSON.parse(corpo); } catch { return route.continue(); }
+  let mudou = false;
+  const vazio = (v) => v == null || v === '' || (Array.isArray(v) && !v.length);
+  for (const k of Object.keys(obj)) {
+    if (/filia/i.test(k) && vazio(obj[k])) { obj[k] = Array.isArray(obj[k]) || /filiais|ids/i.test(k) ? [FILIAL_ID] : FILIAL_ID; mudou = true; }
+  }
+  if (!mudou) return route.continue();
+  return route.continue({ postData: JSON.stringify(obj), headers: { ...req.headers(), 'content-type': 'application/json' } });
 }
 
 // O que a página manda ao CashBarber ao filtrar: só endereço e parâmetros de data/filial (nada de clientes)
@@ -636,6 +689,8 @@ async function main() {
   const ctx = await browser.newContext({ acceptDownloads: true, locale: 'pt-BR', timezoneId: TZ, viewport: { width: 1400, height: 900 } });
   const page = await ctx.newPage();
   page.on('download', (d) => FILA.push(d));
+  ctx.on('response', observarRespostas);
+  await ctx.route(/\/api\/painel\/relatorios\//, ajustarPedido);
   ctx.on('page', (p) => { p.on('download', (d) => FILA.push(d)); NOVAS.push(p); });
   page.setDefaultTimeout(20000);
   page.on('dialog', (d) => d.dismiss().catch(() => {})); // nunca confirma diálogos (exclusões etc.)
@@ -676,7 +731,8 @@ async function main() {
             log(`  ${nome}: período por ${como}${datas ? ` (${datas})` : ''}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ''}`);
             for (const { r, x } of pedidos.slice(0, 4)) {
               const resp = await r.response().catch(() => null);
-              log(`    → ${x} · resposta ${resp ? resp.status() : '?'}`);
+              const ajust = FILIAL_ID && /filia[^=]*=(null|undefined|)(,|\])/i.test(x) ? ` (filial ajustada para ${FILIAL_ID})` : '';
+              log(`    → ${x}${ajust} · resposta ${resp ? resp.status() : '?'}`);
             }
             const aviso = await lerAviso(page);
             if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex ||= aviso.download || null; }
@@ -700,6 +756,7 @@ async function main() {
         for (const p of ctx.pages()) if (p !== page) await p.close().catch(() => {});
       }
       const tipos = Object.keys(porTipo);
+      if (!FILIAL_ID) log('  Código da filial Village não apareceu nas respostas do CashBarber (relatórios que pedem filial podem falhar).');
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
       // envia o que conseguiu; o que faltou fica relatado (cada relatório só substitui a sua parte no painel)
       const faltam = ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe'].filter((t) => !porTipo[t]);

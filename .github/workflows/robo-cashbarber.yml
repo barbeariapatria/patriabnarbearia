@@ -50,6 +50,7 @@ jobs:
           PAINEL_URL: ${{ secrets.PAINEL_URL }}
           IMPORT_TOKEN: ${{ secrets.IMPORT_TOKEN }}
           NAVEGADOR: chrome
+          CASHBARBER_FILIAL_ID: ${{ vars.CASHBARBER_FILIAL_ID }}
           MODO: ${{ inputs.modo || 'sincronizar' }}
           MES: ${{ inputs.mes }}
         run: node sync.mjs
