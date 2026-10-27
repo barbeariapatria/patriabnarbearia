@@ -14,6 +14,14 @@ on:
       mes:
         description: "Mês específico (AAAA-MM). Vazio = mês corrente (no dia 1º, também o anterior)"
         required: false
+      substituir:
+        description: "Substituir os dados do mês no painel mesmo se o total for bem diferente do atual"
+        type: boolean
+        default: false
+      manter_assinantes:
+        description: "Não mexer na base de assinantes do mês (usar para meses passados)"
+        type: boolean
+        default: false
 
 concurrency:
   group: robo-cashbarber
@@ -53,6 +61,8 @@ jobs:
           CASHBARBER_FILIAL_ID: ${{ vars.CASHBARBER_FILIAL_ID }}
           MODO: ${{ inputs.modo || 'sincronizar' }}
           MES: ${{ inputs.mes }}
+          SUBSTITUIR: ${{ inputs.substituir || false }}
+          MANTER_ASSINANTES: ${{ inputs.manter_assinantes || false }}
         run: node sync.mjs
       # Só o resumo (e o mapa no modo mapear): nenhum dado de cliente é salvo — o repositório é público
       - name: Guardar o resumo

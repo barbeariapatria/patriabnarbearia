@@ -377,7 +377,8 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
       const atual = await db.get('SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia), 0) AS t FROM daily_revenue WHERE date >= ? AND date <= ?', de, ate);
       const novo = plan.financeiro.resumo.faturamento_total;
       const atualT = Number(atual?.t) || 0;
-      if (!(novo > 0) || (atualT > 0 && novo < atualT * 0.5)) {
+      // "forcar" (execução manual com substituir) libera a comparação com o atual; total zerado nunca passa
+      if (!(novo > 0) || (!req.body.forcar && atualT > 0 && novo < atualT * 0.5)) {
         ignoradosPorSeguranca.push(`comandas (total recebido ${novo > 0 ? `${Math.round((novo / atualT) * 100)}% do que já está no painel` : 'zerado'}; nada foi alterado)`);
         plan.financeiro = null;
       }
@@ -385,6 +386,15 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
     if (plan.agenda && !(plan.agenda.totais?.total > 0)) { ignoradosPorSeguranca.push('agendamentos (vazio)'); plan.agenda = null; }
     if (plan.servicos && !(plan.servicos.total > 0)) { ignoradosPorSeguranca.push('serviços (zerado)'); plan.servicos = null; }
     if (plan.produtos && !(plan.produtos.total > 0)) { ignoradosPorSeguranca.push('vendas (zerado)'); plan.produtos = null; }
+    // "manter_assinantes": os assinantes servem só para separar novas assinaturas de recorrência; a base de assinantes
+    // gravada no mês não muda (só os cancelamentos do mês são atualizados)
+    if (req.body.manter_assinantes && plan.assinaturas) {
+      const atualRep = await db.get('SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, 'assinaturas');
+      let antigo = null; try { antigo = atualRep ? (typeof atualRep.data === 'string' ? JSON.parse(atualRep.data) : atualRep.data) : null; } catch {}
+      plan.assinaturas = antigo
+        ? { ...antigo, cancelamentos: plan.assinaturas.cancelamentos ?? antigo.cancelamentos, motivos: plan.assinaturas.motivos ?? antigo.motivos }
+        : (plan.assinaturas.cancelamentos != null ? { total: null, ativos: null, inadimplentes: null, novas_no_mes: null, planos: [], cancelamentos: plan.assinaturas.cancelamentos, motivos: plan.assinaturas.motivos } : null);
+    }
     // Cópia de segurança do mês antes de gravar (POST /api/admin/robo/desfazer volta para ela)
     if (plan.financeiro || plan.produtos) {
       await setSetting('robo_backup', {

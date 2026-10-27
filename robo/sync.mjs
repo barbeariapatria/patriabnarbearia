@@ -674,7 +674,8 @@ async function explicarErro(r) {
 async function enviar(mes, files) {
   const url = (process.env.PAINEL_URL || '').replace(/\/+$/, '');
   if (!url || !process.env.IMPORT_TOKEN) throw new Error('Faltam PAINEL_URL e/ou IMPORT_TOKEN.');
-  const corpo = JSON.stringify({ ano: mes.ano, mes: mes.mes, files });
+  // SUBSTITUIR=1: troca o mês mesmo com total bem diferente do atual · MANTER_ASSINANTES=1: não mexe na base de assinantes
+  const corpo = JSON.stringify({ ano: mes.ano, mes: mes.mes, files, forcar: process.env.SUBSTITUIR === '1' || process.env.SUBSTITUIR === 'true', manter_assinantes: process.env.MANTER_ASSINANTES === '1' || process.env.MANTER_ASSINANTES === 'true' });
   if (corpo.length > 4 * 1024 * 1024) throw new Error(`Os relatórios somam ${(corpo.length / 1048576).toFixed(1)} MB; o painel aceita até 4 MB por envio.`);
   const r = await fetch(`${url}/api/robo/importar`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-import-token': process.env.IMPORT_TOKEN.trim() }, body: corpo,
@@ -742,6 +743,8 @@ async function main() {
     for (const mes of mesesParaImportar()) {
       const per = periodo(mes);
       log(`== ${pad(mes.mes)}/${mes.ano} (${per.deBr} a ${per.ateBr})`);
+      if (process.env.SUBSTITUIR === 'true' || process.env.SUBSTITUIR === '1') log('  Opção: substituir os dados do mês');
+      if (process.env.MANTER_ASSINANTES === 'true' || process.env.MANTER_ASSINANTES === '1') log('  Opção: não mexer na base de assinantes');
       const porTipo = {}; const resumo = { mes: `${mes.ano}-${pad(mes.mes)}`, relatorios: {} };
       for (const pg of PAGINAS) {
         const nome = pg.nome || pg.url;
