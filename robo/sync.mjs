@@ -306,12 +306,19 @@ async function escolherFilial(page) {
       if (!op) { log(`  (filial: ${c.select.opcoes.length} opções e nenhuma da filial Village Rio das Ostras/Pátria)`); continue; }
       if (c.select.atual === op.t) { feitos.push(`filial "${op.t}" (já marcada)`); continue; }
       await box.locator('select').first().evaluate((sel, v) => {
-        for (const o of sel.options) o.selected = sel.multiple ? (o.selected || o.value === v) : o.value === v;
+        for (const o of sel.options) o.selected = o.value === v; // só a filial escolhida (desmarca "Todas")
         sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true }));
-        if (window.jQuery) { try { const $s = window.jQuery(sel); $s.trigger('change'); if ($s.selectpicker) $s.selectpicker('refresh'); } catch {} }
+        if (window.jQuery) { try { const $s = window.jQuery(sel); $s.val(sel.multiple ? [v] : v).trigger('change'); if ($s.selectpicker) $s.selectpicker('refresh'); } catch {} }
       }, op.v);
-      feitos.push(`filial "${op.t}"`);
+      const marcadas = await box.locator('select').first().evaluate((sel) => [...sel.selectedOptions].map((o) => o.text.trim()).join(' + '));
+      feitos.push(`filial "${marcadas || op.t}"`);
       continue;
+    }
+    // lista de várias escolhas: tira o "Todas" que vem marcado
+    for (const chip of await box.locator('.MuiChip-root, [class*="multiValue"], .select2-selection__choice').all()) {
+      if (RE_OPCAO_GERAL.test((await chip.innerText().catch(() => '')).trim())) {
+        await chip.locator('.MuiChip-deleteIcon, [class*="multiValue__remove"], .select2-selection__choice__remove').first().click().catch(() => {});
+      }
     }
     if (RE_PATRIA.test(c.texto)) { feitos.push(`filial "${c.texto}" (já marcada)`); continue; }
     // lista com busca (MUI Autocomplete, react-select, select2 sem <select>): abre e escolhe pela lista que aparece
