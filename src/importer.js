@@ -5,7 +5,7 @@
 //   - Assinantes:    "Cliente", "Plano", "Status", "Data de criação"
 //   - Cancelamentos: "Plano", "Cliente", "Data assinatura", "Data de cancelamento", "Motivo"
 //   - Equipe:        "ID", "Nome", "E-mail", "Status", "Tipo", "Criado em"
-//   - Vendas:        "Item", "Quantidade", "Valor" (produtos vendidos no mês — relatório Financeiro → Vendas)
+//   - Vendas:        "Item" (ou "Nome"), "Quantidade", "Valor" (produtos vendidos no mês — relatório Financeiro → Vendas)
 // Os valores por dia vêm das comandas; a divisão entre serviços, SVA e produtos usa a proporção do relatório de serviços.
 // Dados pessoais dos clientes (nome, telefone, e-mail) são lidos só para contar e nunca são gravados.
 const { db, tx, getSetting, setSetting } = require('./db');
@@ -51,7 +51,7 @@ function detect(rows) {
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
   if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
-  if (k.includes('ITEM') && k.includes('QUANTIDADE') && k.includes('VALOR')) return 'vendas';
+  if ((k.includes('ITEM') || k.includes('NOME')) && k.includes('QUANTIDADE') && k.includes('VALOR') && k.length <= 4) return 'vendas';
   return null;
 }
 
@@ -170,7 +170,7 @@ async function analyze(files, escolhido = {}) {
   let produtos = null;
   if (reports.vendas) {
     const itens = reports.vendas
-      .map((r) => ({ nome: r.ITEM, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) }))
+      .map((r) => ({ nome: r.ITEM ?? r.NOME, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) }))
       .filter((i) => i.nome && normalize(i.nome) !== 'TOTAL' && (i.valor || i.quantidade));
     produtos = { total: round2(itens.reduce((s, i) => s + i.valor, 0)), quantidade: itens.reduce((s, i) => s + i.quantidade, 0), itens };
   }

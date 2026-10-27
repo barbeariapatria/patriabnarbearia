@@ -636,13 +636,13 @@ function tipoDoCsv(csv) {
   const linha = (String(csv).replace(/^\uFEFF/, '').split(/\r?\n/).find((l) => l.trim()) || '');
   const k = linha.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/)
     .map((c) => c.replace(/"/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[.\-_]/g, ' ').replace(/\s+/g, ' ').trim());
-  if (k.includes('ID DA COMANDA')) return 'comandas';
+  if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
   if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
-  if (k.includes('ITEM') && k.includes('QUANTIDADE') && k.includes('VALOR')) return 'vendas';
+  if ((k.includes('ITEM') || k.includes('NOME')) && k.includes('QUANTIDADE') && k.includes('VALOR') && k.length <= 4) return 'vendas';
   return null;
 }
 
@@ -759,8 +759,18 @@ async function main() {
             const ouvir = (r) => { if (['xhr', 'fetch', 'document'].includes(r.resourceType())) { const x = resumoPedido(r); if (x && !/woot|chatwoot|analytics|sentry|hotjar|google/i.test(x)) pedidos.push({ r, x }); } };
             page.on('request', ouvir);
             const f0 = FILA.length; const n0 = NOVAS.length;
-            const filtrou = await aplicarFiltro(page);
+            let filtrou = await aplicarFiltro(page);
             ex = filtrou ? await aguardarResultado(page, f0, n0) : null;
+            // o clique não disparou o relatório (lista da filial aberta por cima, botão ainda carregando): tenta de novo
+            for (let t = 0; t < 2 && filtrou && !ex && !pedidos.some((p) => /\/relatorios\//.test(p.x)); t++) {
+              await page.keyboard.press('Escape').catch(() => {});
+              await page.waitForTimeout(800);
+              const b = page.locator('button:visible').filter({ hasText: /^\s*filtrar\s*$/i }).first();
+              await b.scrollIntoViewIfNeeded().catch(() => {});
+              await b.click({ timeout: 5000, force: true }).catch(() => {});
+              log(`  ${nome}: Filtrar de novo (o pedido não tinha saído)`);
+              ex = await aguardarResultado(page, FILA.length, NOVAS.length);
+            }
             page.off('request', ouvir);
             log(`  ${nome}: período por ${como}${datas ? ` (${datas})` : ''}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ''}`);
             for (const { r, x } of pedidos.slice(0, 4)) {
