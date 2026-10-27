@@ -277,69 +277,64 @@ async function lerAviso(page) {
 const RE_PATRIA = new RegExp(process.env.CASHBARBER_FILIAL || 'village|rio das ostras|p[aá]tria', 'i');
 const RE_OPCAO_GERAL = /^(todas?|todos|selecione|nenhum|--)/i;
 async function escolherFilial(page) {
+  // 1) acha a caixinha de cada campo "Filial" (o menor bloco em volta do rótulo que tem um controle)
   const campos = await page.evaluate(() => {
     document.querySelectorAll('[data-robo-filial]').forEach((e) => e.removeAttribute('data-robo-filial'));
     const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-    return [...document.querySelectorAll('label')].filter((l) => vis(l) && /^\s*(filial|filiais|unidade|unidades)\s*\*?\s*$/i.test(l.innerText))
+    const ctrl = 'select, input:not([type="checkbox"]):not([type="hidden"]), [role="combobox"], [role="button"], button, .dropdown-toggle, [class*="-control"], .select2-selection';
+    return [...document.querySelectorAll('label, .MuiInputLabel-root, .form-label, span, p')]
+      .filter((l) => vis(l) && l.children.length === 0 && /^\s*(filial|filiais|unidade|unidades)\s*\*?\s*$/i.test(l.innerText))
       .map((l, i) => {
         let box = l.parentElement;
-        while (box && box !== document.body && !box.querySelector('select, input:not([type="checkbox"]), [role="combobox"]')) box = box.parentElement;
-        if (!box || box === document.body || box.querySelectorAll('label').length > 2) return null; // bloco grande demais: não arrisca
+        while (box && box !== document.body && !box.querySelector(ctrl)) box = box.parentElement;
+        if (!box || box === document.body) return null;
+        const rotulos = [...box.querySelectorAll('label, .MuiInputLabel-root, .form-label')].filter(vis).length;
+        if (rotulos > 2) return null; // bloco com vários campos: não arrisca
         box.setAttribute('data-robo-filial', String(i));
-        const sel = box.querySelector('select');
-        return {
-          i, select: sel ? { multiplo: sel.multiple, atual: [...sel.selectedOptions].map((o) => o.text.trim()).join(', '), opcoes: [...sel.options].map((o) => ({ v: o.value, t: o.text.trim() })) } : null,
-          texto: (box.querySelector('input')?.value || box.querySelector('[class*="singleValue"], [class*="multiValue"], .select2-selection__rendered, .MuiChip-label')?.innerText || '').trim(),
-        };
+        return { i };
       }).filter(Boolean);
   });
+  if (!campos.length) return [];
+  const mostra = (box) => box.evaluate((b) => (b.innerText || '').replace(/\s+/g, ' ').trim() + ' ' +
+    [...b.querySelectorAll('input, select')].map((x) => (x.tagName === 'SELECT' ? [...x.selectedOptions].map((o) => o.text).join(',') : x.value)).join(' ')).catch(() => '');
   const feitos = [];
   for (const c of campos) {
     const box = page.locator(`[data-robo-filial="${c.i}"]`);
-    const escolher = (lista) => {
-      const reais = lista.filter((o) => o.t && !RE_OPCAO_GERAL.test(o.t));
-      return reais.find((o) => RE_PATRIA.test(o.t)) || (reais.length === 1 ? reais[0] : null);
-    };
-    if (c.select) {
-      // <select> comum, select2 ou bootstrap-select (o <select> fica escondido)
-      const op = escolher(c.select.opcoes.filter((o) => o.v !== ''));
-      if (!op) { log(`  (filial: ${c.select.opcoes.length} opções e nenhuma da filial Village Rio das Ostras/Pátria)`); continue; }
-      if (c.select.atual === op.t) { feitos.push(`filial "${op.t}" (já marcada)`); continue; }
-      await box.locator('select').first().evaluate((sel, v) => {
-        for (const o of sel.options) o.selected = o.value === v; // só a filial escolhida (desmarca "Todas")
-        sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true }));
-        if (window.jQuery) { try { const $s = window.jQuery(sel); $s.val(sel.multiple ? [v] : v).trigger('change'); if ($s.selectpicker) $s.selectpicker('refresh'); } catch {} }
-      }, op.v);
-      const marcadas = await box.locator('select').first().evaluate((sel) => [...sel.selectedOptions].map((o) => o.text.trim()).join(' + '));
-      feitos.push(`filial "${marcadas || op.t}"`);
-      continue;
-    }
-    // lista de várias escolhas: tira o "Todas" que vem marcado
-    for (const chip of await box.locator('.MuiChip-root, [class*="multiValue"], .select2-selection__choice').all()) {
-      if (RE_OPCAO_GERAL.test((await chip.innerText().catch(() => '')).trim())) {
-        await chip.locator('.MuiChip-deleteIcon, [class*="multiValue__remove"], .select2-selection__choice__remove').first().click().catch(() => {});
+    if (RE_PATRIA.test(await mostra(box))) { feitos.push('filial Village (já estava marcada)'); continue; }
+
+    // 2) <select> visível comum: escolhe pela opção
+    const selVis = box.locator('select:visible').first();
+    if (await selVis.count()) {
+      const ops = await selVis.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, t: o.text.trim() })));
+      const op = ops.find((o) => RE_PATRIA.test(o.t));
+      if (op) await selVis.selectOption(op.v).catch(() => {});
+    } else {
+      // 3) botão/lista como o de uma pessoa: clica no botão Filial e escolhe a Village na lista que abrir
+      const botao = box.locator('[role="combobox"]:visible, .MuiSelect-select:visible, .MuiAutocomplete-root input:visible, .dropdown-toggle:visible, [class*="-control"]:visible, .select2-selection:visible, button:visible, input:visible').first();
+      for (let tentativa = 0; tentativa < 2 && !RE_PATRIA.test(await mostra(box)); tentativa++) {
+        await botao.click({ timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+        const opcoes = page.locator('[role="option"], [role="menuitem"], [role="listbox"] li, .MuiAutocomplete-option, .dropdown-menu.show li, .dropdown-menu.show a, .select2-results__option, [class*="-option"], ul[class*="menu"] li')
+          .filter({ visible: true }).filter({ hasText: RE_PATRIA });
+        if (await opcoes.count()) {
+          await opcoes.first().click().catch(() => {});
+          await page.waitForTimeout(700);
+        } else if (tentativa === 0) {
+          // lista com busca: digita o nome
+          await page.keyboard.type('Village', { delay: 40 }).catch(() => {});
+          await page.waitForTimeout(1200);
+          const achou = page.locator('[role="option"], .MuiAutocomplete-option, [class*="-option"], .select2-results__option, .dropdown-menu.show li').filter({ visible: true }).filter({ hasText: RE_PATRIA });
+          if (await achou.count()) { await achou.first().click().catch(() => {}); await page.waitForTimeout(700); }
+        }
+        await page.keyboard.press('Escape').catch(() => {});
       }
     }
-    if (RE_PATRIA.test(c.texto)) { feitos.push(`filial "${c.texto}" (já marcada)`); continue; }
-    // lista com busca (MUI Autocomplete, react-select, select2 sem <select>): abre e escolhe pela lista que aparece
-    const abrir = box.locator('.MuiAutocomplete-popupIndicator, button[aria-label="Open"], [class*="indicatorContainer"], [class*="-control"], [role="combobox"], .select2-selection, input').first();
-    await abrir.click({ timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    const opcoes = page.locator('[role="listbox"] [role="option"], .select2-results__option, [class*="-option"], .MuiAutocomplete-option, .dropdown-menu.show li').filter({ visible: true });
-    const textos = (await opcoes.allInnerTexts().catch(() => [])).map((t, k) => ({ t: t.trim(), k }));
-    const op = escolher(textos);
-    if (op) {
-      await opcoes.nth(op.k).click().catch(() => {});
-      await page.waitForTimeout(500);
-      await page.keyboard.press('Escape').catch(() => {});
-      feitos.push(`filial "${op.t}"`);
-    } else {
-      await page.keyboard.press('Escape').catch(() => {});
-      log(`  (filial: lista com ${textos.length} opções e nenhuma da filial Village Rio das Ostras/Pátria)`);
-    }
+    // 4) confere o que o botão mostra agora
+    const agora = (await mostra(box)).slice(0, 80);
+    if (RE_PATRIA.test(agora)) feitos.push('filial Village (conferido na tela)');
+    else feitos.push(`FILIAL NÃO MARCADA — o campo mostra "${agora || 'vazio'}"`);
   }
-  if (!campos.length) return feitos;
-  return feitos.length ? feitos : ['filial não escolhida'];
+  return feitos;
 }
 
 // Depois de Filtrar: espera o resultado (até 25 s). O CSV pode vir como download direto, abrir em outra aba, ou
