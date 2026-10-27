@@ -282,9 +282,9 @@ async function escolherFilial(page) {
     const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
     return [...document.querySelectorAll('label')].filter((l) => vis(l) && /^\s*(filial|filiais|unidade|unidades)\s*\*?\s*$/i.test(l.innerText))
       .map((l, i) => {
-        let box = l.closest('.form-group, .MuiFormControl-root, .col, [class*="col-"]') || l.parentElement;
-        if (box && !box.querySelector('select, input, [role="combobox"]')) box = box.parentElement;
-        if (!box) return null;
+        let box = l.parentElement;
+        while (box && box !== document.body && !box.querySelector('select, input:not([type="checkbox"]), [role="combobox"]')) box = box.parentElement;
+        if (!box || box === document.body || box.querySelectorAll('label').length > 2) return null; // bloco grande demais: não arrisca
         box.setAttribute('data-robo-filial', String(i));
         const sel = box.querySelector('select');
         return {
@@ -362,6 +362,60 @@ async function aguardarResultado(page, f0, n0) {
     await page.waitForTimeout(1000);
   }
   return null;
+}
+
+// Confere as datas da tela depois do atalho; se não forem as do mês, digita uma a uma (como uma pessoa)
+async function conferirDatas(page, per) {
+  const campos = page.locator('input:visible').filter({ hasNot: page.locator('[type="checkbox"]') });
+  const n = await campos.count();
+  const datas = [];
+  for (let i = 0; i < n; i++) {
+    const c = campos.nth(i);
+    const v = await c.inputValue().catch(() => '');
+    const t = await c.getAttribute('type').catch(() => '');
+    if (t === 'date' || /^\d{2}\/\d{2}\/\d{4}$/.test(v.trim()) || /dd\/mm|data/i.test(`${await c.getAttribute('placeholder').catch(() => '')}`)) datas.push({ c, v: v.trim(), t });
+    if (datas.length === 2) break;
+  }
+  if (datas.length < 2) return null;
+  const quer = datas[0].t === 'date' ? [per.deIso, per.ateIso] : [per.deBr, per.ateBr];
+  if (datas[0].v === quer[0] && datas[1].v === quer[1]) return 'datas conferidas';
+  for (const [k, d] of datas.entries()) {
+    if (d.t === 'date') { await d.c.fill(quer[k]).catch(() => {}); continue; }
+    await d.c.click({ timeout: 5000 }).catch(() => {});
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.press('Backspace').catch(() => {});
+    await d.c.pressSequentially(quer[k], { delay: 40 }).catch(() => {});
+    // máscara que não aceita "/": digita só os números
+    if ((await d.c.inputValue().catch(() => '')).replace(/\D/g, '') !== quer[k].replace(/\D/g, '')) {
+      await page.keyboard.press('Control+A').catch(() => {}); await page.keyboard.press('Backspace').catch(() => {});
+      await d.c.pressSequentially(quer[k].replace(/\D/g, ''), { delay: 40 }).catch(() => {});
+    }
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.keyboard.press('Tab').catch(() => {});
+  }
+  await page.waitForTimeout(500);
+  const depois = [await datas[0].c.inputValue().catch(() => ''), await datas[1].c.inputValue().catch(() => '')];
+  return `datas digitadas (antes ${datas[0].v || 'vazio'} a ${datas[1].v || 'vazio'}, agora ${depois.join(' a ')})`;
+}
+
+// O que a página manda ao CashBarber ao filtrar: só endereço e parâmetros de data/filial (nada de clientes)
+const RE_PARAM = /data|date|inicio|fim|final|periodo|filia|unidade|empresa|estabelecimento|loja/i;
+function resumoPedido(req) {
+  try {
+    const u = new URL(req.url());
+    const params = [];
+    for (const [k, v] of u.searchParams) if (RE_PARAM.test(k)) params.push(`${k}=${v.slice(0, 40)}`);
+    const corpo = req.postData() || '';
+    if (corpo) {
+      let obj = null;
+      try { obj = JSON.parse(corpo); } catch { obj = Object.fromEntries(new URLSearchParams(corpo)); }
+      const walk = (o, pre = '') => { if (!o || typeof o !== 'object') return; for (const [k, v] of Object.entries(o)) {
+        if (v && typeof v === 'object') walk(v, `${pre}${k}.`); else if (RE_PARAM.test(k)) params.push(`${pre}${k}=${String(v).slice(0, 40)}`);
+      } };
+      walk(obj);
+    }
+    return `${req.method()} ${u.pathname}${params.length ? ` [${params.join(', ')}]` : ''}`;
+  } catch { return null; }
 }
 
 // botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
@@ -615,11 +669,20 @@ async function main() {
             const como = await definirPeriodo(page, per);
             if (!como) throw new Error('não achei o filtro de datas');
             const filial = await escolherFilial(page);
-            // no CashBarber o arquivo só sai depois de clicar em Filtrar
+            const datas = await conferirDatas(page, per);
+            // no CashBarber o arquivo só sai depois de clicar em Filtrar; registra o que a página envia
+            const pedidos = [];
+            const ouvir = (r) => { if (['xhr', 'fetch', 'document'].includes(r.resourceType())) { const x = resumoPedido(r); if (x && !/woot|chatwoot|analytics|sentry|hotjar|google/i.test(x)) pedidos.push({ r, x }); } };
+            page.on('request', ouvir);
             const f0 = FILA.length; const n0 = NOVAS.length;
             const filtrou = await aplicarFiltro(page);
             ex = filtrou ? await aguardarResultado(page, f0, n0) : null;
-            log(`  ${nome}: período por ${como}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ''}`);
+            page.off('request', ouvir);
+            log(`  ${nome}: período por ${como}${datas ? ` (${datas})` : ''}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ''}`);
+            for (const { r, x } of pedidos.slice(0, 4)) {
+              const resp = await r.response().catch(() => null);
+              log(`    → ${x} · resposta ${resp ? resp.status() : '?'}`);
+            }
             const aviso = await lerAviso(page);
             if (aviso) { log(`  ${nome}: aviso do CashBarber: "${aviso.texto || '(sem texto)'}"`); ex ||= aviso.download || null; }
           }
