@@ -1479,7 +1479,7 @@
   }
 
   // ============================================================ Admin · Importar CashBarber
-  const REPORT_LABEL = { comandas: 'Comandas', agendamentos: 'Agendamentos', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos', equipe: 'Equipe' };
+  const REPORT_LABEL = { comandas: 'Comandas', agendamentos: 'Agendamentos', servicos: 'Serviços realizados', assinantes: 'Assinantes', cancelamentos: 'Cancelamentos', equipe: 'Equipe', vendas: 'Vendas (produtos)' };
 
   async function viewAdminImport(view) {
     const { ultima } = await api('/api/admin/importar');

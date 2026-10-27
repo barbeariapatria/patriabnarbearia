@@ -487,6 +487,7 @@ function tipoDoCsv(csv) {
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
   if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
+  if (k.includes('ITEM') && k.includes('QUANTIDADE') && k.includes('VALOR')) return 'vendas';
   return null;
 }
 
@@ -618,7 +619,7 @@ async function main() {
       const tipos = Object.keys(porTipo);
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
       // envia o que conseguiu; o que faltou fica relatado (cada relatório só substitui a sua parte no painel)
-      const faltam = ['comandas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe'].filter((t) => !porTipo[t]);
+      const faltam = ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe'].filter((t) => !porTipo[t]);
       if (faltam.length) log(`  Não veio desta vez: ${faltam.join(', ')} — essas partes do painel ficam como estavam.`);
       resumo.faltaram = faltam;
       if (!tipos.length) {

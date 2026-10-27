@@ -5,6 +5,7 @@
 //   - Assinantes:    "Cliente", "Plano", "Status", "Data de criação"
 //   - Cancelamentos: "Plano", "Cliente", "Data assinatura", "Data de cancelamento", "Motivo"
 //   - Equipe:        "ID", "Nome", "E-mail", "Status", "Tipo", "Criado em"
+//   - Vendas:        "Item", "Quantidade", "Valor" (produtos vendidos no mês — relatório Financeiro → Vendas)
 // Os valores por dia vêm das comandas; a divisão entre serviços, SVA e produtos usa a proporção do relatório de serviços.
 // Dados pessoais dos clientes (nome, telefone, e-mail) são lidos só para contar e nunca são gravados.
 const { db, tx, getSetting, setSetting } = require('./db');
@@ -50,6 +51,7 @@ function detect(rows) {
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
   if (k.includes('ID') && k.includes('NOME') && k.includes('TIPO') && k.includes('CRIADO EM')) return 'equipe';
+  if (k.includes('ITEM') && k.includes('QUANTIDADE') && k.includes('VALOR')) return 'vendas';
   return null;
 }
 
@@ -103,8 +105,8 @@ async function analyze(files, escolhido = {}) {
     const [dy, dm] = months[0].split('-').map(Number);
     throw new Error(`Os arquivos são de ${MONTHS[dm - 1]}/${dy}, mas o mês escolhido é ${MONTHS[em - 1]}/${ey}. Escolha ${MONTHS[dm - 1]}/${dy} ou envie os arquivos do mês certo.`);
   }
-  const needsMonth = ['servicos', 'assinantes', 'cancelamentos'].some((k) => reports[k]);
-  if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Assinantes e Cancelamentos não trazem datas.');
+  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas'].some((k) => reports[k]);
+  if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Vendas, Assinantes e Cancelamentos não trazem datas.');
   const [y, m] = months.length ? months[0].split('-').map(Number) : (needsMonth || reports.equipe ? [ey, em] : [null, null]);
   if (y && m) periodos.mes = { de: iso(y, m, 1), ate: iso(y, m, daysInMonth(y, m)), texto: `${MONTHS[m - 1]}/${y}` };
 
@@ -162,6 +164,15 @@ async function analyze(files, escolhido = {}) {
     if (item.sva) svaTotal += item.faturado;
   }
 
+  // ---- produtos vendidos no mês (relatório Vendas): valor real de produtos, que já está dentro das comandas
+  let produtos = null;
+  if (reports.vendas) {
+    const itens = reports.vendas
+      .map((r) => ({ nome: r.ITEM, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) }))
+      .filter((i) => i.nome && normalize(i.nome) !== 'TOTAL' && (i.valor || i.quantidade));
+    produtos = { total: round2(itens.reduce((s, i) => s + i.valor, 0)), quantidade: itens.reduce((s, i) => s + i.quantidade, 0), itens };
+  }
+
   // ---- financeiro (comandas)
   let financeiro = null;
   if (comandas.length) {
@@ -171,6 +182,8 @@ async function analyze(files, escolhido = {}) {
       svaShare = Math.min(1, svaTotal / comandaTotal);
       prodShare = Math.max(0, Math.min(1 - svaShare, (comandaTotal - servTotal) / comandaTotal));
     }
+    // com o relatório Vendas, a parte de produtos é o valor real vendido (distribuído na proporção das comandas do dia)
+    if (produtos && comandaTotal > 0) prodShare = Math.max(0, Math.min(1 - svaShare, produtos.total / comandaTotal));
     // Assinaturas: nova quando a cobrança é no dia em que a assinatura foi criada; demais são recorrência
     const created = new Map();
     for (const r of reports.assinantes || []) { const d = brDate(r['DATA DE CRIACAO']); if (d && r.CLIENTE) created.set(normalize(r.CLIENTE), d); }
@@ -283,7 +296,7 @@ async function analyze(files, escolhido = {}) {
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
     mes_detectado: months.length > 0, periodos,
     relatorios: Object.keys(reports), ignorados: ignored,
-    equipe, financeiro, agenda, assinaturas,
+    equipe, financeiro, agenda, assinaturas, produtos,
     servicos: servicos.length ? { lista: servicos, sva_total: round2(svaTotal), total: round2(servTotal) } : null,
   };
 }
@@ -335,6 +348,22 @@ async function apply(plan) {
       }
     }
 
+    // Vendas sem comandas no mesmo envio: reparte o total de produtos nos dias já gravados do mês, tirando de serviços
+    // (o total de cada dia não muda; produtos já estavam dentro das comandas)
+    if (plan.produtos && !plan.financeiro && y && m) {
+      const dias = await q.all('SELECT * FROM daily_revenue WHERE date >= ? AND date <= ?', iso(y, m, 1), iso(y, m, daysInMonth(y, m)));
+      const base = (d) => (Number(d.servicos) || 0) + (Number(d.produtos) || 0);
+      const soma = dias.reduce((s, d) => s + base(d), 0);
+      if (soma > 0) {
+        const share = Math.min(1, plan.produtos.total / soma);
+        for (const d of dias) {
+          const prod = round2(base(d) * share);
+          await q.run('UPDATE daily_revenue SET servicos = ?, produtos = ?, updated_at = CURRENT_TIMESTAMP WHERE date = ?', round2(base(d) - prod), prod, d.date);
+        }
+      }
+    }
+    if (plan.produtos && y && m) await saveReport(q, y, m, 'produtos', plan.produtos);
+
     if (plan.agenda) {
       const profissionais = [];
       for (const p of plan.agenda.profissionais) {
@@ -355,7 +384,7 @@ async function apply(plan) {
     ok: true, ano: y, mes: m,
     dias: plan.financeiro?.diario.length || 0,
     profissionais: plan.financeiro?.profissionais.length || 0,
-    agenda: !!plan.agenda, equipe: plan.equipe?.profissionais.length || 0,
+    agenda: !!plan.agenda, equipe: plan.equipe?.profissionais.length || 0, produtos: plan.produtos?.total ?? null,
   };
 }
 
