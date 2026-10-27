@@ -294,7 +294,26 @@ async function analyze(files, escolhido = {}) {
     };
   }
 
+  // ---- indicadores da unidade (planilha "Análise de Unidade"): só contagens, sem nomes de clientes
+  const unidade = {};
+  if (comandas.length) {
+    const visitas = new Set(comandas.filter((c) => c.tipo !== 'ASSINATURA' && c.cliente).map((c) => normalize(c.cliente)));
+    const assinantesSet = new Set([
+      ...(reports.assinantes || []).filter((r) => r.CLIENTE).map((r) => normalize(r.CLIENTE)),
+      ...comandas.filter((c) => c.tipo === 'ASSINATURA' && c.cliente).map((c) => normalize(c.cliente)),
+    ]);
+    let assinantesAtendidos = 0; let novos = 0;
+    for (const c of visitas) { if (assinantesSet.has(c)) assinantesAtendidos++; if (NEW_CLIENT.test(c)) novos++; }
+    Object.assign(unidade, { clientes_atendidos: visitas.size, clientes_assinantes_atendidos: assinantesAtendidos, clientes_avulsos: visitas.size - assinantesAtendidos, clientes_novos: novos });
+  }
+  if (servicos.length) {
+    unidade.servicos_realizados = servicos.reduce((t, x) => t + x.quantidade, 0);
+    unidade.servicos_extras = servicos.filter((x) => x.sva).reduce((t, x) => t + x.quantidade, 0);
+  }
+  if (agendamentos.length) unidade.atendimentos_clube = agendamentos.filter((a) => a.clube && a.status === 'FINALIZADO').length;
+
   return {
+    unidade: Object.keys(unidade).length ? unidade : null,
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
     mes_detectado: months.length > 0, periodos,
     relatorios: Object.keys(reports), ignorados: ignored,
@@ -377,6 +396,12 @@ async function apply(plan) {
     if (y && m) await saveReport(q, y, m, 'importacao', { em: new Date().toISOString(), relatorios: plan.relatorios, periodos: plan.periodos });
     if (plan.assinaturas) await saveReport(q, y, m, 'assinaturas', plan.assinaturas);
     if (plan.servicos) await saveReport(q, y, m, 'servicos', plan.servicos);
+    // indicadores da unidade: junta com o que já existe (cada relatório traz uma parte)
+    if (plan.unidade && y && m) {
+      const atual = await q.get('SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, 'unidade');
+      let antigo = {}; try { antigo = atual ? (typeof atual.data === 'string' ? JSON.parse(atual.data) : atual.data) || {} : {}; } catch {}
+      await saveReport(q, y, m, 'unidade', { ...antigo, ...plan.unidade });
+    }
   });
   if (plan.equipe) {
     const dirRows = (await db.all('SELECT id, name, external_id FROM professionals')).filter((p) => p.external_id);

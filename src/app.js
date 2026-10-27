@@ -495,6 +495,41 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
     conferencia: { dias_com_movimento: result.dias, profissionais: result.profissionais, comandas: plan.financeiro?.resumo.comandas ?? null, cobrancas_assinatura: plan.financeiro?.resumo.cobrancas_assinatura ?? null },
   };
 }));
+// Dados do mês para as planilhas Google (Apps Script), com o mesmo token do robô. Só totais e contagens.
+app.get('/api/robo/planilha', robotAuth, wrap(async (req) => {
+  const y = Number(req.query.ano); const m = Number(req.query.mes);
+  if (!y || !m || m < 1 || m > 12) throw new Error('Informe ano e mes');
+  const de = metrics.iso(y, m, 1); const ate = metrics.iso(y, m, metrics.daysInMonth(y, m));
+  const diario = await db.all('SELECT date, servicos, produtos, novas_assinaturas, sva, recorrencia, status FROM daily_revenue WHERE date >= ? AND date <= ? ORDER BY date', de, ate);
+  const rep = async (kind) => {
+    const r = await db.get('SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, kind);
+    try { return r ? (typeof r.data === 'string' ? JSON.parse(r.data) : r.data) : null; } catch { return null; }
+  };
+  const soma = (k) => Math.round(diario.reduce((t, d) => t + (Number(d[k]) || 0), 0) * 100) / 100;
+  const total = soma('servicos') + soma('produtos') + soma('novas_assinaturas') + soma('sva') + soma('recorrencia');
+  const assinaturas = await rep('assinaturas'); const unidade = (await rep('unidade')) || {};
+  const pros = await db.all(`SELECT p.name AS nome, pm.faturamento_total, pm.faturamento_assinatura, pm.comissao, pm.ticket_medio, pm.clientes_atendidos,
+      pm.geracao_demanda, pm.servicos_realizados, pm.venda_produtos, pm.qtd_produtos
+    FROM professional_monthly pm JOIN professionals p ON p.id = pm.professional_id WHERE pm.year = ? AND pm.month = ? ORDER BY pm.faturamento_total DESC`, y, m);
+  const ultima = await getSetting('ultima_importacao');
+  return {
+    ano: y, mes: m, tem_dados: diario.length > 0, atualizado_em: ultima?.ano === y && ultima?.mes === m ? ultima.em : null,
+    unidade: {
+      faturamento_total: Math.round(total * 100) / 100,
+      faturamento_assinatura: Math.round((soma('novas_assinaturas') + soma('recorrencia')) * 100) / 100,
+      faturamento_avulso: Math.round((soma('servicos') + soma('sva')) * 100) / 100,
+      faturamento_produtos: soma('produtos'),
+      novas_assinaturas_valor: soma('novas_assinaturas'), recorrencia: soma('recorrencia'), sva: soma('sva'),
+      assinantes: assinaturas?.ativos ?? assinaturas?.total ?? null,
+      novos_assinantes: assinaturas?.novas_no_mes ?? null,
+      cancelamentos: assinaturas?.cancelamentos ?? null,
+      ...unidade,
+    },
+    profissionais: pros,
+    diario,
+  };
+}));
+
 // Desfaz a última atualização do robô no faturamento do mês (volta para a cópia feita antes de gravar)
 app.post('/api/admin/robo/desfazer', auth.requireAdmin, wrap(async () => {
   const b = await getSetting('robo_backup');
