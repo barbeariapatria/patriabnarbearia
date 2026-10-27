@@ -211,6 +211,8 @@ async function preencherDatas(page, per) {
 async function definirPeriodo(page, per) {
   if (per.atalho) {
     const b = (await clicaveis(page)).find((c) => norm(c.texto) === norm(per.atalho));
+    // atalho que já está ativo não é clicado de novo (em algumas telas o clique desliga o atalho)
+    if (b && /\b(is-active|active|selected)\b/.test(b.desc)) return `atalho "${per.atalho}" (já ativo)`;
     if (b) {
       await alvo(page, b.i).click({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(1000);
