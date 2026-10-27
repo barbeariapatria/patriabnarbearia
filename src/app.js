@@ -1,7 +1,7 @@
 // Aplicação Express (API). Usada pelo servidor local (server.js) e pela função da Vercel (api/index.js).
 const crypto = require('node:crypto');
 const express = require('express');
-const { db, tx, getAllSettings, setSetting, ensureSecret, migrate, databaseInfo } = require('./db');
+const { db, tx, getSetting, getAllSettings, setSetting, ensureSecret, migrate, databaseInfo } = require('./db');
 const auth = require('./auth');
 const metrics = require('./metrics');
 const webhook = require('./webhook');
@@ -368,9 +368,54 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
   const files = Array.isArray(req.body?.files) ? req.body.files.filter((f) => f && typeof f.text === 'string') : [];
   if (!files.length) throw new Error('Nenhum arquivo recebido');
   const plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
+  const y = plan.ano; const m = plan.mes;
+  const ignoradosPorSeguranca = [];
+  if (y && m) {
+    const de = metrics.iso(y, m, 1); const ate = metrics.iso(y, m, metrics.daysInMonth(y, m));
+    // Trava: o robô nunca troca o faturamento do mês por um total zerado ou muito menor do que o que já está gravado
+    if (plan.financeiro) {
+      const atual = await db.get('SELECT COALESCE(SUM(servicos + produtos + novas_assinaturas + sva + recorrencia), 0) AS t FROM daily_revenue WHERE date >= ? AND date <= ?', de, ate);
+      const novo = plan.financeiro.resumo.faturamento_total;
+      const atualT = Number(atual?.t) || 0;
+      if (!(novo > 0) || (atualT > 0 && novo < atualT * 0.5)) {
+        ignoradosPorSeguranca.push(`comandas (total recebido ${novo > 0 ? `${Math.round((novo / atualT) * 100)}% do que já está no painel` : 'zerado'}; nada foi alterado)`);
+        plan.financeiro = null;
+      }
+    }
+    if (plan.agenda && !(plan.agenda.totais?.total > 0)) { ignoradosPorSeguranca.push('agendamentos (vazio)'); plan.agenda = null; }
+    if (plan.servicos && !(plan.servicos.total > 0)) { ignoradosPorSeguranca.push('serviços (zerado)'); plan.servicos = null; }
+    if (plan.produtos && !(plan.produtos.total > 0)) { ignoradosPorSeguranca.push('vendas (zerado)'); plan.produtos = null; }
+    // Cópia de segurança do mês antes de gravar (POST /api/admin/robo/desfazer volta para ela)
+    if (plan.financeiro || plan.produtos) {
+      await setSetting('robo_backup', {
+        em: new Date().toISOString(), ano: y, mes: m,
+        daily_revenue: await db.all('SELECT * FROM daily_revenue WHERE date >= ? AND date <= ?', de, ate),
+        professional_monthly: await db.all('SELECT * FROM professional_monthly WHERE year = ? AND month = ?', y, m),
+      });
+    }
+  }
   const result = await importer.apply(plan);
-  await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, origem: 'robô' });
-  return { result, relatorios: plan.relatorios, ignorados: plan.ignorados };
+  await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, origem: 'robô', ignorados_por_seguranca: ignoradosPorSeguranca });
+  return {
+    result, relatorios: plan.relatorios, ignorados: plan.ignorados, ignorados_por_seguranca: ignoradosPorSeguranca,
+    conferencia: { dias_com_movimento: result.dias, profissionais: result.profissionais, comandas: plan.financeiro?.resumo.comandas ?? null, cobrancas_assinatura: plan.financeiro?.resumo.cobrancas_assinatura ?? null },
+  };
+}));
+// Desfaz a última atualização do robô no faturamento do mês (volta para a cópia feita antes de gravar)
+app.post('/api/admin/robo/desfazer', auth.requireAdmin, wrap(async () => {
+  const b = await getSetting('robo_backup');
+  if (!b) throw new Error('Não há cópia de segurança do robô para restaurar.');
+  const de = metrics.iso(b.ano, b.mes, 1); const ate = metrics.iso(b.ano, b.mes, metrics.daysInMonth(b.ano, b.mes));
+  await tx(async (q) => {
+    await q.run('DELETE FROM daily_revenue WHERE date >= ? AND date <= ?', de, ate);
+    for (const d of b.daily_revenue) await q.run('INSERT INTO daily_revenue(date, servicos, produtos, novas_assinaturas, sva, recorrencia, status, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)', d.date, d.servicos, d.produtos, d.novas_assinaturas, d.sva, d.recorrencia, d.status || 'REALIZADO');
+    await q.run('DELETE FROM professional_monthly WHERE year = ? AND month = ?', b.ano, b.mes);
+    for (const r of b.professional_monthly) {
+      const cols = Object.keys(r).filter((k) => k !== 'id');
+      await q.run(`INSERT INTO professional_monthly(${cols.join(', ')}) VALUES(${cols.map(() => '?').join(', ')})`, ...cols.map((k) => r[k]));
+    }
+  });
+  return { ok: true, restaurado: { ano: b.ano, mes: b.mes, de: b.em, dias: b.daily_revenue.length } };
 }));
 app.get('/api/admin/importar', auth.requireAdmin, wrap(async () => ({ ultima: (await getAllSettings()).ultima_importacao || null })));
 app.post('/api/admin/demo', auth.requireAdmin, wrap(async (req) => {

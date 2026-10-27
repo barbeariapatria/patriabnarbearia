@@ -45,7 +45,7 @@ const brDate = (v) => { const m = String(v || '').match(/(\d{2})\/(\d{2})\/(\d{4
 
 function detect(rows) {
   const k = Object.keys(rows[0] || {});
-  if (k.includes('ID DA COMANDA')) return 'comandas';
+  if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
@@ -82,7 +82,9 @@ async function analyze(files, escolhido = {}) {
 
   // ---- mês do relatório (pelas comandas e/ou agendamentos)
   const comandas = (reports.comandas || []).map((r) => ({
-    pro: r.PROFISSIONAL, cliente: r.CLIENTE, tipo: normalize(r.TIPO), valor: money(r['VALOR COMANDA FECHADA / ASSINATURA']), date: brDate(r['DATA E HORA']),
+    // o relatório antigo chama a coluna de "Valor comanda fechada / assinatura"; o de Faturamento, só de "Valor"
+    pro: r.PROFISSIONAL, cliente: r.CLIENTE, tipo: normalize(r.TIPO),
+    valor: money(r['VALOR COMANDA FECHADA / ASSINATURA'] ?? r['VALOR COMANDA FECHADA'] ?? r.VALOR ?? r['VALOR TOTAL']), date: brDate(r['DATA E HORA'] ?? r.DATA),
   })).filter((c) => c.date);
   const agendamentos = (reports.agendamentos || []).map((r) => ({
     pro: r.PROFISSIONAL, origem: normalize(r['ORIGEM AGENDAMENTO']), clube: normalize(r['ACESSO AO CLUBE']) === 'SIM',

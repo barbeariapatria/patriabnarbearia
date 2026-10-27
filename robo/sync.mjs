@@ -802,6 +802,11 @@ async function main() {
           const r = await enviar(mes, Object.values(porTipo));
           resumo.envio = { reconhecidos: r.relatorios, ignorados: r.ignorados };
           log(`  Painel atualizado com: ${(r.relatorios || []).join(', ')}${r.ignorados?.length ? ` · ignorados: ${r.ignorados.join(', ')}` : ''}`);
+          if (r.ignorados_por_seguranca?.length) {
+            log(`  TRAVA DE SEGURANÇA — o painel NÃO alterou: ${r.ignorados_por_seguranca.join('; ')}`);
+            relatorioFinal.erros.push(`${resumo.mes}: trava de segurança barrou ${r.ignorados_por_seguranca.join('; ')}`);
+          }
+          if (r.conferencia) log(`  Conferência: ${r.conferencia.dias_com_movimento} dias com movimento · ${r.conferencia.comandas ?? '-'} comandas · ${r.conferencia.cobrancas_assinatura ?? '-'} cobranças de assinatura · ${r.conferencia.profissionais} profissionais`);
         } catch (e) { resumo.envio = `erro: ${e.message}`; relatorioFinal.erros.push(`${resumo.mes} envio: ${e.message}`); log(`  ENVIO FALHOU — ${e.message}`); }
       }
       relatorioFinal.meses.push(resumo);
