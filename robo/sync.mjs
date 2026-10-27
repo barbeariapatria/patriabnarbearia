@@ -245,7 +245,17 @@ async function definirPeriodo(page, per) {
 // lê e fecha o aviso do CashBarber (SweetAlert), se houver; devolve o texto (e-mails mascarados)
 async function lerAviso(page) {
   const pop = page.locator('.swal2-popup:visible').first();
-  if (!(await pop.count())) return null;
+  if (!(await pop.count())) {
+    // outros tipos de aviso (toast, alerta) e o resumo "N registros" dos Resultados, quando houver
+    const outros = await page.evaluate(() => {
+      const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      const avisos = [...document.querySelectorAll('.Toastify__toast, .MuiAlert-message, .toast-message, .toast-body, .alert-danger, .alert-warning, .notistack-Snackbar, [role="alert"]')]
+        .filter(vis).map((e) => e.innerText.trim()).filter(Boolean);
+      const reg = [...document.querySelectorAll('body *')].filter((e) => e.children.length === 0 && /\d+\s+registros?/i.test(e.innerText || '')).map((e) => e.innerText.trim()).slice(0, 1);
+      return [...avisos, ...reg].join(' · ').replace(/\s+/g, ' ').slice(0, 200);
+    }).catch(() => '');
+    return outros ? { texto: outros.replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[e-mail]') } : null;
+  }
   const texto = (await pop.locator('.swal2-title, .swal2-html-container, .swal2-content').allInnerTexts().catch(() => []))
     .join(' — ').replace(/\s+/g, ' ').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[e-mail]').trim().slice(0, 200);
   const ok = pop.locator('.swal2-confirm:visible').first();
