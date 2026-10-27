@@ -263,9 +263,8 @@
       const btn = e.target.querySelector('button');
       btn.disabled = true;
       try {
-        const { user, single_user, password_managed } = await api('/api/auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } });
-        state.user = user; state.singleUser = single_user; state.passwordManaged = password_managed;
-        if (!location.hash || location.hash === '#/') location.hash = '#/inicio';
+        setSession(await api('/api/auth/login', { method: 'POST', body: { username: $('#u').value, password: $('#p').value } }));
+        location.hash = `#/${defaultPath()}`;
         renderShell();
       } catch (err) {
         $('#loginErr').innerHTML = `<div class="form-error">${esc(err.message)}</div>`;
@@ -276,6 +275,7 @@
   // ============================================================ Shell
   const NAV = [
     { group: 'Painel' },
+    { path: 'meu-painel', label: 'Meu desempenho', icon: 'star', title: 'Meu desempenho', month: true, period: true },
     { path: 'inicio', label: 'Início', icon: 'home', title: 'Início', month: true, period: true },
     { path: 'visao-geral', label: 'Painel de metas', icon: 'trend', title: 'Painel de metas', month: true, period: true },
     { path: 'faturamento', label: 'Faturamento diário', icon: 'calendar', title: 'Faturamento por dia', month: true, period: true },
@@ -286,10 +286,23 @@
     { path: 'admin/lancamentos', label: 'Lançamentos', icon: 'edit', title: 'Lançamentos por profissional', month: true, admin: true },
     { path: 'admin/equipe', label: 'Equipe', icon: 'team', title: 'Equipe', admin: true },
     { path: 'admin/metas', label: 'Metas e configurações', icon: 'target', title: 'Metas e configurações', admin: true },
-    { path: 'admin/usuarios', label: 'Usuários', icon: 'shield', title: 'Usuários e acessos', admin: true, multi: true },
+    { path: 'admin/usuarios', label: 'Usuários e acessos', icon: 'shield', title: 'Usuários e acessos', admin: true },
     { path: 'admin/integracao', label: 'Integração & Webhook', icon: 'plug', title: 'Integração CashBarber', admin: true },
   ];
   const isAdmin = () => state.user?.role === 'admin';
+  function setSession(info) {
+    state.user = info.user; state.passwordManaged = info.password_managed; state.principal = info.principal;
+    state.access = info.access || { admin: info.user?.role === 'admin', telas: [], escopo: 'todos' };
+  }
+  // O que cada login vê: administradores veem tudo; barbeiros, só as telas liberadas em Usuários e acessos
+  function canNav(n) {
+    if (n.group) return !n.admin || isAdmin();
+    if (n.admin) return isAdmin();
+    if (n.path === 'meu-painel') return !!state.access?.professional_id && (isAdmin() || state.access.telas.includes('meu-painel'));
+    return isAdmin() || !!state.access?.telas.includes(n.path);
+  }
+  // Primeira tela liberada (o administrador começa pelo Início; o barbeiro, pela primeira tela que ele pode ver)
+  const defaultPath = () => NAV.find((n) => n.path && !n.admin && canNav(n) && !(isAdmin() && n.path === 'meu-painel'))?.path || (isAdmin() ? 'inicio' : 'sem-acesso');
   // Abaixo do logo: o nome da unidade só aparece quando não repete o próprio logo (ex.: filiais)
   const unitLabel = (u) => (/^p[áa]tria barbearia$/i.test(String(u).trim()) ? 'Painel de resultados' : u);
 
@@ -300,14 +313,14 @@
       <aside class="sidebar" id="sidebar">
         <a class="side-logo" href="#/inicio"><img src="/img/patria-logo-sm.png" alt="Pátria Barbearia"><small><span id="unitName">Painel de Resultados</span></small></a>
         <nav class="nav">
-          ${NAV.filter((n) => (!n.admin || isAdmin()) && (!n.multi || !state.singleUser)).map((n) => n.group
+          ${NAV.filter(canNav).map((n) => n.group
             ? `<div class="nav-label">${n.group}</div>`
             : `<a href="#/${n.path}" data-path="${n.path}">${icon(n.icon)}<span>${n.label}</span></a>`).join('')}
         </nav>
         <div class="spacer"></div>
         <div class="user-box">
           <div class="avatar">${esc(initials(state.user.name || state.user.username))}</div>
-          <div class="meta"><b>${esc(state.user.name || state.user.username)}</b><span>${state.user.role === 'admin' ? 'Administrador' : 'Visualizador'}</span></div>
+          <div class="meta"><b>${esc(state.user.name || state.user.username)}</b><span>${state.user.role === 'admin' ? 'Administrador' : esc(state.access?.profissional ? `Barbeiro · ${state.access.profissional}` : 'Barbeiro')}</span></div>
           ${state.passwordManaged ? '' : `<button class="btn btn-ghost btn-icon" id="pwdBtn" title="Alterar senha">${icon('key')}</button>`}
           <button class="btn btn-ghost btn-icon" id="logoutBtn" title="Sair">${icon('logout')}</button>
         </div>
@@ -403,9 +416,14 @@
 
   async function route() {
     if (!state.user) return renderLogin();
-    const path = (location.hash.replace(/^#\/?/, '') || 'inicio');
-    let nav = NAV.find((n) => n.path === path && (!n.admin || isAdmin()) && (!n.multi || !state.singleUser));
-    if (!nav) { location.hash = '#/inicio'; return; }
+    const path = (location.hash.replace(/^#\/?/, '') || defaultPath());
+    if (path === 'sem-acesso' || defaultPath() === 'sem-acesso') {
+      $('#view').innerHTML = `<div class="card">${emptyState('Nenhuma tela liberada', 'Peça ao administrador para liberar as telas do seu login.')}</div>`;
+      $('#monthPicker').classList.add('hidden'); $('#periodWrap').classList.add('hidden'); $('#pageTitle').textContent = 'Sem acesso';
+      return;
+    }
+    let nav = NAV.find((n) => n.path === path && canNav(n));
+    if (!nav) { location.hash = `#/${defaultPath()}`; return; }
     $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.path === path));
     $('#sidebar').classList.remove('open');
     $('#pageTitle').textContent = nav.title;
@@ -1276,44 +1294,87 @@
   }
 
   // ============================================================ Admin · Usuários
+  // Telas que o dono pode liberar para cada login
+  const PERM_PAGES = [
+    ['meu-painel', 'Meu desempenho', 'Os números do próprio barbeiro'],
+    ['inicio', 'Início', 'Faturamento da barbearia, meta e equipe'],
+    ['visao-geral', 'Painel de metas', 'Metas, quinzenas, agenda e clube'],
+    ['faturamento', 'Faturamento diário', 'Faturamento de cada dia'],
+    ['profissionais', 'Profissionais', 'Ranking e comparativo'],
+  ];
+
   async function viewAdminUsers(view) {
     const users = await api('/api/admin/usuarios');
-    $('#pageSub').textContent = 'Administradores editam tudo · Visualizadores só acompanham o painel';
+    $('#pageSub').textContent = 'Crie logins para os barbeiros e escolha o que cada um pode ver';
+    const proName = (id) => state.pros.find((p) => p.id === id)?.name || '—';
+    const telasTxt = (u) => (u.access.admin ? 'Tudo (administrador)' : u.access.telas.map((t) => PERM_PAGES.find((x) => x[0] === t)?.[1]).filter(Boolean).join(', ') || 'Nenhuma tela');
     view.innerHTML = `
       <div class="card fade-in">
-        <div class="card-h"><h3>Usuários</h3><div class="grow"></div><button class="btn btn-primary btn-sm" id="addUser">${icon('plus')} Novo usuário</button></div>
+        <div class="card-h"><h3>Logins</h3><div class="grow"></div><button class="btn btn-primary btn-sm" id="addUser">${icon('plus')} Novo login</button></div>
         <div class="table-wrap"><table class="t">
-          <thead><tr><th>Usuário</th><th>Nome</th><th>Perfil</th><th>Último acesso</th><th></th></tr></thead>
-          <tbody>${users.map((u) => `<tr><td><b>${esc(u.username)}</b>${u.id === state.user.id ? ' <span class="badge accent" style="font-size:10.5px">você</span>' : ''}</td><td>${esc(u.name || '')}</td>
-            <td>${u.role === 'admin' ? '<span class="badge accent">Administrador</span>' : '<span class="badge neutral">Visualizador</span>'}</td>
+          <thead><tr><th>Nome</th><th>Login (e-mail)</th><th>Tipo</th><th>Profissional</th><th>Pode ver</th><th>Situação</th><th>Último acesso</th><th></th></tr></thead>
+          <tbody>${users.map((u) => `<tr>
+            <td><b>${esc(u.name || '')}</b>${u.id === state.user.id ? ' <span class="badge accent" style="font-size:10.5px">você</span>' : ''}</td>
+            <td class="muted">${esc(u.username)}</td>
+            <td>${u.principal ? '<span class="badge accent">Dono</span>' : u.role === 'admin' ? '<span class="badge accent">Administrador</span>' : '<span class="badge neutral">Barbeiro</span>'}</td>
+            <td>${u.access.professional_id ? esc(proName(u.access.professional_id)) : '<span class="muted">—</span>'}</td>
+            <td style="white-space:normal;max-width:280px;font-size:12.5px">${esc(telasTxt(u))}${!u.access.admin ? `<br><span class="muted">${u.access.escopo === 'todos' ? 'vê a equipe toda' : 'só os próprios números'}</span>` : ''}</td>
+            <td>${u.access.ativo ? '<span class="status REALIZADO">ATIVO</span>' : '<span class="status erro">BLOQUEADO</span>'}</td>
             <td class="muted">${fmtDateTime(u.last_login)}</td>
-            <td class="r"><button class="btn btn-sm" data-edit="${u.id}">${icon('edit')} Editar</button> ${u.id !== state.user.id ? `<button class="btn btn-sm btn-danger" data-del="${u.id}">${icon('trash')}</button>` : ''}</td></tr>`).join('')}</tbody>
+            <td class="r">${u.principal ? '<span class="muted" style="font-size:12px">definido na hospedagem</span>' : `<button class="btn btn-sm" data-edit="${u.id}">${icon('edit')} Editar</button> ${u.id !== state.user.id ? `<button class="btn btn-sm btn-danger" data-del="${u.id}" aria-label="Excluir">${icon('trash')}</button>` : ''}`}</td>
+          </tr>`).join('')}</tbody>
         </table></div>
+        <p class="muted" style="font-size:12px;margin:12px 0 0">Barbeiros não veem as telas de administração. O bloqueio vale no servidor: um login sem permissão não consegue puxar os dados nem digitando o endereço.</p>
       </div>`;
-    const form = (u) => modal({
-      title: u ? `Editar ${esc(u.username)}` : 'Novo usuário',
-      body: `<form id="uForm"><div class="form-grid">
-        ${u ? '' : '<div class="field"><label>Usuário (login)</label><input class="input" name="username" required autocomplete="off"></div>'}
-        <div class="field"><label>Nome</label><input class="input" name="name" value="${esc(u?.name || '')}"></div>
-        <div class="field"><label>${u ? 'Nova senha (deixe vazio para manter)' : 'Senha (mín. 6)'}</label><input class="input" name="password" type="password" ${u ? '' : 'required minlength="6"'} autocomplete="new-password"></div>
-        <div class="field"><label>Perfil</label><select class="input" name="role"><option value="viewer" ${u?.role === 'viewer' ? 'selected' : ''}>Visualizador</option><option value="admin" ${u?.role === 'admin' ? 'selected' : ''}>Administrador</option></select></div>
-      </div></form>`,
-      footer: '<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>Salvar</button>',
-      onMount: (el, close) => {
-        $('[data-save]', el).onclick = async () => {
-          const f = $('#uForm', el); if (!f.reportValidity()) return;
-          const body = Object.fromEntries(new FormData(f)); if (!body.password) delete body.password;
-          try { await api(u ? `/api/admin/usuarios/${u.id}` : '/api/admin/usuarios', { method: u ? 'PUT' : 'POST', body }); toast('Usuário salvo'); close(); route(); }
-          catch (e) { toast(e.message.includes('UNIQUE') ? 'Esse login já existe' : e.message, 'err'); }
-        };
-      },
-    });
+
+    const form = (u) => {
+      const a = u?.access || { ativo: true, telas: ['meu-painel'], escopo: 'proprio', professional_id: null, admin: false };
+      const role = u?.role === 'admin' ? 'admin' : 'viewer';
+      modal({
+        wide: true,
+        title: u ? `Editar login · ${esc(u.name || u.username)}` : 'Novo login',
+        body: `<form id="uForm"><div class="form-grid">
+            <div class="field"><label>Nome</label><input class="input" name="name" value="${esc(u?.name || '')}" placeholder="ex.: Victor" required></div>
+            <div class="field"><label>Login (e-mail)</label><input class="input" name="username" type="email" value="${esc(u?.username || '')}" placeholder="barbeiro@email.com" required autocomplete="off"></div>
+            <div class="field"><label>${u ? 'Nova senha (deixe vazio para manter)' : 'Senha (mínimo 6 caracteres)'}</label><input class="input" name="password" type="password" ${u ? '' : 'required minlength="6"'} autocomplete="new-password"></div>
+            <div class="field"><label>Profissional (para "Meu desempenho")</label><select class="input" name="professional_id"><option value="">— nenhum —</option>${state.pros.map((p) => `<option value="${p.id}" ${a.professional_id === p.id ? 'selected' : ''}>${esc(p.name)}${p.active ? '' : ' (inativo)'}</option>`).join('')}</select></div>
+            <div class="field"><label>Tipo de acesso</label><select class="input" name="role"><option value="viewer" ${role === 'viewer' ? 'selected' : ''}>Barbeiro (vê só o que for liberado)</option><option value="admin" ${role === 'admin' ? 'selected' : ''}>Administrador (vê e edita tudo)</option></select></div>
+            <div class="field"><label>Situação</label><select class="input" name="ativo"><option value="1" ${a.ativo ? 'selected' : ''}>Ativo</option><option value="0" ${a.ativo ? '' : 'selected'}>Bloqueado (não consegue entrar)</option></select></div>
+          </div>
+          <div id="permBox">
+            <h4 style="font-size:14px;margin:6px 0 10px">O que este login pode ver</h4>
+            <div class="perm-grid">${PERM_PAGES.map(([k, l, d]) => `<label class="perm"><input type="checkbox" name="telas" value="${k}" ${a.telas.includes(k) ? 'checked' : ''}><span><b>${l}</b><small>${d}</small></span></label>`).join('')}</div>
+            <h4 style="font-size:14px;margin:16px 0 10px">Números dos outros profissionais</h4>
+            <div class="perm-grid">
+              <label class="perm"><input type="radio" name="escopo" value="proprio" ${a.escopo !== 'todos' ? 'checked' : ''}><span><b>Só os próprios números</b><small>Não vê faturamento nem ranking dos colegas</small></span></label>
+              <label class="perm"><input type="radio" name="escopo" value="todos" ${a.escopo === 'todos' ? 'checked' : ''}><span><b>A equipe toda</b><small>Vê o ranking e os números de todos</small></span></label>
+            </div>
+          </div></form>`,
+        footer: '<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>Salvar</button>',
+        onMount: (el, close) => {
+          const f = $('#uForm', el);
+          const sync = () => { $('#permBox', el).style.opacity = f.role.value === 'admin' ? 0.4 : 1; $$('#permBox input', el).forEach((i) => { i.disabled = f.role.value === 'admin'; }); };
+          f.role.onchange = sync; sync();
+          $('[data-save]', el).onclick = async () => {
+            if (!f.reportValidity()) return;
+            const body = {
+              name: f.name.value, username: f.username.value, password: f.password.value, role: f.role.value, ativo: f.ativo.value === '1',
+              professional_id: f.professional_id.value ? Number(f.professional_id.value) : null,
+              telas: $$('input[name="telas"]:checked', el).map((i) => i.value), escopo: $('input[name="escopo"]:checked', el)?.value || 'proprio',
+            };
+            if (!body.password) delete body.password;
+            try { await api(u ? `/api/admin/usuarios/${u.id}` : '/api/admin/usuarios', { method: u ? 'PUT' : 'POST', body }); toast(u ? 'Login atualizado' : 'Login criado'); close(); route(); }
+            catch (e) { toast(e.message, 'err'); }
+          };
+        },
+      });
+    };
     $('#addUser').onclick = () => form();
     $$('[data-edit]', view).forEach((b) => b.addEventListener('click', () => form(users.find((u) => u.id === Number(b.dataset.edit)))));
     $$('[data-del]', view).forEach((b) => b.addEventListener('click', async () => {
       const u = users.find((x) => x.id === Number(b.dataset.del));
-      if (!(await confirmDialog(`Excluir o usuário <b>${esc(u.username)}</b>?`, { ok: 'Excluir' }))) return;
-      await api(`/api/admin/usuarios/${u.id}`, { method: 'DELETE' }); toast('Usuário excluído'); route();
+      if (!(await confirmDialog(`Excluir o login <b>${esc(u.username)}</b>? A pessoa não vai mais conseguir entrar.`, { ok: 'Excluir' }))) return;
+      try { await api(`/api/admin/usuarios/${u.id}`, { method: 'DELETE' }); toast('Login excluído'); route(); } catch (e) { toast(e.message, 'err'); }
     }));
   }
 
@@ -1699,8 +1760,71 @@
     }));
   }
 
+
+  // ============================================================ Meu desempenho (o barbeiro vê os próprios números)
+  async function viewMeuPainel(view) {
+    const pid = state.access?.professional_id;
+    const [ps, yr, rep] = await Promise.all([
+      api(`/api/profissionais/stats?${periodQS()}`),
+      api(`/api/profissionais/ano?ano=${periodYear()}`),
+      api(`/api/relatorios?${periodQS()}`).catch(() => null),
+    ]);
+    const me = ps.profissionais.find((p) => p.professional_id === pid);
+    const nome = state.access.profissional || state.user.name;
+    $('#pageSub').textContent = `${nome} · ${psTitle(ps)}`;
+    if (!me?.has_data) {
+      view.innerHTML = `<div class="card">${emptyState(`Sem números em ${psTitle(ps)}`, 'Assim que o mês for importado do CashBarber, seus números aparecem aqui. Use as setas no topo para ver outros meses.')}</div>`;
+      return;
+    }
+    const team = ps.profissionais.filter((p) => p.has_data).sort((a, b) => b.faturamento_total - a.faturamento_total);
+    const pos = team.findIndex((p) => p.professional_id === pid) + 1;
+    const showTeam = !ps.restrito && team.length > 1;
+    const ag = rep?.agenda?.profissionais?.find((p) => p.professional_id === pid);
+    const atend = ag ? ag.total - ag.futuros : 0;
+    const vs = (k) => { if (!showTeam) return ''; const a = ps.media[k]; if (!a || !me[k]) return ''; const v = ((me[k] - a) / a) * 100; return `<span class="badge ${v >= 0 ? 'good' : 'bad'}" style="font-size:11px">${icon(v >= 0 ? 'up' : 'down')}${pct(Math.abs(v))} vs média</span>`; };
+    const card = (l, v, k, ic) => `<div class="card kpi fade-in"><div class="top"><div class="ico">${icon(ic)}</div>${l}</div><div class="v num">${v}</div><div class="foot">${vs(k)}</div></div>`;
+    const extras = Object.entries(me.extras || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    const maxE = Math.max(1, ...extras.map((e) => e[1]));
+
+    view.innerHTML = `
+      <div class="card hero fade-in">
+        <div class="avatar" style="width:72px;height:72px;font-size:24px;background:${proColor(pid)};color:#fff;border:none">${esc(initials(nome))}</div>
+        <div style="flex:1;min-width:0">
+          <div class="eyebrow">Seu faturamento · ${esc(psTitle(ps))}</div>
+          <div class="val num">${brl(me.faturamento_total)}</div>
+          <div class="row">${showTeam ? `<span><b>${pos}º</b> lugar entre ${team.length} profissionais</span><span>${pct((me.faturamento_total / (ps.total.faturamento_total || 1)) * 100)} do faturamento da equipe</span>` : '<span>Seus números do período</span>'}</div>
+        </div>
+      </div>
+      <div class="grid g-4">
+        ${card('Atendimentos', int(me.clientes_atendidos), 'clientes_atendidos', 'users')}
+        ${card('Ticket médio', brl(me.ticket_medio), 'ticket_medio', 'ticket')}
+        ${card('Comissão', brl(me.comissao), 'comissao', 'cash')}
+        ${card('Clientes novos', int(me.geracao_demanda), 'geracao_demanda', 'spark')}
+      </div>
+      <div class="grid g-2">
+        ${ag ? `<div class="card fade-in"><div class="card-h"><h3>${icon('calendar')} Sua agenda</h3></div>
+          <div class="grid g-2" style="gap:10px">
+            ${[['Agendamentos', int(ag.total), ag.futuros ? `${int(ag.futuros)} ainda por vir` : ''], ['Comparecimento', rate(ag.finalizados, atend), `${int(ag.finalizados)} finalizados`],
+              ['Cancelados', int(ag.cancelados), rate(ag.cancelados, ag.total)], ['Faltas', int(ag.faltas), rate(ag.faltas, atend)],
+              ['Pelo app', rate(ag.app, ag.total), `${int(ag.app)} agendamentos`], ['Assinantes', rate(ag.clube, ag.total), `${int(ag.total - ag.clube)} avulsos`]]
+              .map(([l, v, f]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:19px;font-weight:700">${v}</div><div class="muted" style="font-size:11.5px">${f}</div></div>`).join('')}
+          </div></div>` : ''}
+        <div class="card fade-in"><div class="card-h"><h3>Seu faturamento mês a mês · ${periodYear()}</h3></div><div class="chart-box sm"><canvas id="cMe"></canvas></div></div>
+      </div>
+      ${extras.length ? `<div class="card fade-in"><div class="card-h"><h3>${icon('spark')} Serviços adicionais</h3></div>
+        <div class="comp-list">${extras.map(([k, v]) => `<div class="comp-item"><div class="l"><span>${esc(k)}</span><b class="num">${int(v)}</b></div><div class="bar"><i style="width:${(v / maxE) * 100}%;background:${proColor(pid)}"></i></div></div>`).join('')}</div></div>` : ''}`;
+
+    const proName = state.pros.find((p) => p.id === pid)?.name || nome;
+    chart($('#cMe'), {
+      type: 'bar',
+      data: { labels: MONTHS.map((m) => m.slice(0, 3)), datasets: [{ label: 'Faturamento', data: yr.meses.map((m) => m.profissionais[proName] || 0), backgroundColor: yr.meses.map((m) => ((isRange() ? ps.meses?.some((x) => x.mes === m.mes) : m.mes === state.m) ? proColor(pid) : hexA(proColor(pid), 0.35))), borderRadius: 4, maxBarThickness: 28 }] },
+      options: { maintainAspectRatio: false, scales: { y: { ...moneyAxis, beginAtZero: true }, x: { grid: { display: false }, border: { display: false } } }, plugins: { tooltip: { callbacks: { label: (c) => ` ${brl(c.raw)}` } } } },
+    });
+  }
+
   const VIEWS = {
     inicio: viewHome,
+    'meu-painel': viewMeuPainel,
     'admin/importar': viewAdminImport,
     'admin/dados': viewAdminData,
     'visao-geral': viewOverview,
@@ -1716,6 +1840,6 @@
   // ============================================================ Boot
   window.addEventListener('hashchange', () => state.user && route());
   api('/api/auth/me')
-    .then(({ user, single_user, password_managed }) => { state.user = user; state.singleUser = single_user; state.passwordManaged = password_managed; renderShell(); })
+    .then((info) => { setSession(info); renderShell(); })
     .catch(() => renderLogin());
 })();
