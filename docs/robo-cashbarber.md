@@ -9,7 +9,17 @@ exporta os relatórios do mês em CSV e envia para o painel, que importa como em
       na Vercel). Corpo: `{ "ano": 2026, "mes": 10, "files": [{ "name": "comandas.csv", "text": "..." }] }`.
 - [x] Script do robô (Playwright) em `robo/sync.mjs` + agendamento diário em `.github/workflows/robo-cashbarber.yml`.
       Testado contra um CashBarber simulado (login, menus, filtros de data, exportação CSV/Excel, leitura de tabela).
-- [ ] Primeira execução no CashBarber real (modo **mapear**) e fixar as URLs em `robo/relatorios.json`.
+- [x] Primeira execução completa no CashBarber real (27/10/2026): Faturamento, Vendas, Histórico de agendamentos,
+      Serviços, Quantidade de assinantes, Cancelados por período e Usuários — 1755 registros conferidos.
+
+### Detalhes do CashBarber que o robô trata
+
+- Filial: o usuário do robô só tem acesso à **Village Rio das Ostras**; com "Todas" o CashBarber recusa
+  ("Você não possui acesso a todas as filiais"). O robô escolhe a Village no botão Filial e, se o pedido ainda sair
+  com `id_filial` vazio, coloca o código dela (descoberto na tela; pode ser fixado com a variável `CASHBARBER_FILIAL_ID`).
+- Faturamento (relatorio20) é a fonte das comandas. Movimentações **não** é usado (inclui operações de caixa).
+- Trava no painel: o robô não troca o faturamento do mês por total zerado ou menor que 50% do atual, e guarda uma
+  cópia do mês antes de gravar (`POST /api/admin/robo/desfazer` volta para ela).
 
 ## Como o robô trabalha
 
