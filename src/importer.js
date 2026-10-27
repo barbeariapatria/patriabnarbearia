@@ -174,7 +174,8 @@ async function analyze(files, escolhido = {}) {
     const salvos = await db.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'servicos'", y, m).catch(() => null);
     let listaSalva = []; try { listaSalva = salvos ? ((typeof salvos.data === 'string' ? JSON.parse(salvos.data) : salvos.data)?.lista || []) : []; } catch {}
     const nomesServico = new Set([...servicos.map((x) => x.nome), ...listaSalva.map((x) => x.nome), ...extrasCatalog, ...CORE_SERVICES].map(serviceKey));
-    const ehServico = (n) => nomesServico.has(serviceKey(n)) || /^(CORTE|CABELO|BARBA|SOBRANCELHA|PEZINHO|BIGODE|LUZES|PLATINAD|SELAGEM|ALISAMENTO|HID|PIG|DEP|SPA|BARBOTERAPIA|LAVAGEM|CONE|RELAXAMENTO|PROGRESSIVA|MANICURE|PEDICURE)/.test(normalize(n));
+    const ehServico = (n) => nomesServico.has(serviceKey(n)) || (/^(CORTE|CABELO|BARBA|SOBRANCELHA|PEZINHO|BIGODE|LUZES|PLATINAD|SELAGEM|ALISAMENTO|HID|PIG|DEP|SPA|BARBOTERAPIA|LAVAGEM|CONE|RELAXAMENTO|PROGRESSIVA|MANICURE|PEDICURE|PACOTE|COMBO|LIMPEZA|TERAPIA|ESCOVA|TINTURA|COLORACAO|NEVOU|BOTOX|ESFOLIACAO|MASSAGEM|DESIGN|UNHA)/.test(normalize(n))
+      || /^(MAO|PE|PE E MAO|MAO E PE|SPA DOS PES)$/.test(normalize(n)));
     const itens = reports.vendas
       .map((r) => ({ nome: r.ITEM ?? r.NOME, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) }))
       .filter((i) => i.nome && normalize(i.nome) !== 'TOTAL' && (i.valor || i.quantidade) && !ehServico(i.nome));
