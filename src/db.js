@@ -351,6 +351,10 @@ const DEFAULT_SETTINGS = {
     'WHISKY', 'WHISKEY', 'DOSE', 'GIN', 'VODKA', 'CACHACA', 'CAIPIRINHA', 'DRINK', 'TONICA', 'CAFE', 'CAPUCCINO', 'CAPPUCCINO'],
   // Usuários do CashBarber usados só para comandas de consumo (bar): saem do ranking dos profissionais
   bar_profissionais: [],
+  // Comissão: o CashBarber calcula a assinatura com taxa_cashbarber (%); quem tem outra taxa é recalculado no painel
+  comissao_regras: { taxa_cashbarber: 40, assinatura: {}, assinatura_por_nome: { LUCAS: 35 } },
+  // Serviços que contam como "Barbearia" na comissão; o resto do avulso são os serviços extras
+  servicos_barbearia: ['CABELO', 'BARBA', 'CABELO E BARBA', 'PEZINHO'],
 };
 
 const parse = (v) => { try { return JSON.parse(v); } catch { return v; } };

@@ -48,6 +48,8 @@ function detect(rows) {
   if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
   // Gestão → Gerar comissões: o que cada profissional recebe no período
   if (k.includes('PROFISSIONAL') && k.includes('TOTAL LIQUIDO')) return 'comissoes';
+  // serviços de cada barbeiro (relatório Serviços filtrado por barbeiro, montado pelo robô)
+  if (k.includes('PROFISSIONAL') && k.includes('SERVICO') && k.includes('FATURADO')) return 'servicos_pro';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
@@ -61,6 +63,8 @@ function detect(rows) {
 
 // Serviços principais (corte/barba); os demais contam como SVA (serviço de valor agregado)
 const CORE_SERVICES = ['CABELO', 'BARBA', 'CABELO E BARBA', 'PEZINHO', 'BIGODE', 'CORTE'];
+// "Barbearia" na comissão: os serviços base; o resto do avulso são os serviços extras (Admin → Metas pode mudar)
+const BARBEARIA_DEFAULT = ['CABELO', 'BARBA', 'CABELO E BARBA', 'PEZINHO'];
 // "N/A" são cobranças de assinatura sem profissional; a Recepção entra como os profissionais
 const NOT_PROFESSIONAL = ['N/A', ''];
 const NEW_CLIENT = /NOV[OA] CADASTRO|CADASTRO NOV[OA]|CLIENTE NOV[OA]/;
@@ -124,7 +128,7 @@ async function analyze(files, escolhido = {}) {
     const [dy, dm] = months[0].split('-').map(Number);
     throw new Error(`Os arquivos são de ${MONTHS[dm - 1]}/${dy}, mas o mês escolhido é ${MONTHS[em - 1]}/${ey}. Escolha ${MONTHS[dm - 1]}/${dy} ou envie os arquivos do mês certo.`);
   }
-  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens', 'comissoes'].some((k) => reports[k]);
+  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens', 'comissoes', 'servicos_pro'].some((k) => reports[k]);
   if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Vendas, Assinantes, Cancelamentos e Comissões não trazem datas.');
   const [y, m] = months.length ? months[0].split('-').map(Number) : (needsMonth || reports.equipe ? [ey, em] : [null, null]);
   if (y && m) periodos.mes = { de: iso(y, m, 1), ate: iso(y, m, daysInMonth(y, m)), texto: `${MONTHS[m - 1]}/${y}` };
@@ -396,8 +400,25 @@ async function analyze(files, escolhido = {}) {
     comissoes = { lista, total_bruto: soma('total_bruto'), total_liquido: soma('total_liquido'), vales: soma('vales'), bonus: soma('bonus') };
   }
 
+  // ---- bruto de cada barbeiro: Barbearia (cabelo, barba, cabelo e barba, pezinho) x serviços extras, e produtos
+  let brutoPro = null;
+  if (reports.servicos_pro || itensPro.length) {
+    const barbearia = new Set(((await getSetting('servicos_barbearia')) || BARBEARIA_DEFAULT).map(serviceKey));
+    const map = new Map();
+    const get = (nome) => { if (!map.has(nome)) map.set(nome, { nome_cashbarber: nome, ...resolve(nome), barbearia: 0, extras: 0, produtos: 0, servicos: [] }); return map.get(nome); };
+    for (const r of reports.servicos_pro || []) {
+      if (!r.PROFISSIONAL || !r.SERVICO) continue;
+      const p = get(r.PROFISSIONAL); const v = money(r.FATURADO); const qtd = money(r.QUANTIDADE);
+      const ehBarbearia = barbearia.has(serviceKey(r.SERVICO));
+      p[ehBarbearia ? 'barbearia' : 'extras'] = round2(p[ehBarbearia ? 'barbearia' : 'extras'] + v);
+      p.servicos.push({ nome: r.SERVICO, quantidade: qtd, faturado: v, barbearia: ehBarbearia });
+    }
+    for (const i of itensPro) if (!isBarItem(i.nome, barCatalog, i.tipo)) { const p = get(i.pro); p.produtos = round2(p.produtos + i.valor); }
+    brutoPro = { servicos: !!reports.servicos_pro, produtos: itensPro.length > 0, por_profissional: [...map.values()] };
+  }
+
   return {
-    comissoes,
+    comissoes, bruto_pro: brutoPro,
     unidade: Object.keys(unidade).length ? unidade : null,
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
     mes_detectado: months.length > 0, periodos,
@@ -496,6 +517,23 @@ async function apply(plan) {
       await saveReport(q, y, m, 'bar', { ...resto, por_profissional: (por_profissional || []).map(({ nome, valor }) => ({ nome, valor })) });
     }
     if (plan.produtos && y && m) await saveReport(q, y, m, 'produtos', plan.produtos);
+    // bruto por barbeiro: junta com o que já existe (serviços e produtos podem vir em envios diferentes)
+    if (plan.bruto_pro && y && m) {
+      const atual = await q.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'bruto_pro'", y, m);
+      let antigo = []; try { antigo = atual ? ((typeof atual.data === 'string' ? JSON.parse(atual.data) : atual.data)?.por_profissional || []) : []; } catch {}
+      const lista = [];
+      for (const p of plan.bruto_pro.por_profissional) {
+        const pid = await ensurePro(p);
+        const old = antigo.find((x) => x.professional_id === pid) || {};
+        lista.push({
+          professional_id: pid, nome: p.nome,
+          ...(plan.bruto_pro.servicos ? { barbearia: p.barbearia, extras: p.extras, servicos: p.servicos } : { barbearia: old.barbearia ?? null, extras: old.extras ?? null, servicos: old.servicos || [] }),
+          produtos: plan.bruto_pro.produtos ? p.produtos : (old.produtos ?? null),
+        });
+      }
+      for (const o of antigo) if (!lista.some((x) => x.professional_id === o.professional_id)) lista.push(o);
+      await saveReport(q, y, m, 'bruto_pro', { por_profissional: lista, atualizado: new Date().toISOString() });
+    }
     // comissões: o total líquido vira a comissão do mês de cada profissional
     if (plan.comissoes && y && m) {
       const lista = [];

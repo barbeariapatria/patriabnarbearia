@@ -8,6 +8,7 @@ const webhook = require('./webhook');
 const seed = require('./seed');
 const importer = require('./importer');
 const access = require('./access');
+const comissoes = require('./comissoes');
 
 // Prepara o banco uma vez por instância (em serverless, a cada "cold start")
 let ready;
@@ -172,49 +173,99 @@ app.get('/api/profissionais', auth.requireAuth, wrap(async (req) => {
 }));
 // Últimos eventos do webhook, resumidos para a página inicial (qualquer usuário logado)
 // ---------------------------------------------------------------- Comissões (Gestão → Gerar comissões do CashBarber)
-const COM_NUM = ['avulso_bruto', 'avulso_liquido', 'assinatura_bruto', 'assinatura_liquido', 'produtos_bruto', 'produtos_liquido', 'bonus', 'vales', 'total_bruto', 'total_liquido'];
-async function readComissoes(y, m) {
-  const row = await db.get('SELECT data, updated_at FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, 'comissoes');
-  let data = null; try { data = row ? (typeof row.data === 'string' ? JSON.parse(row.data) : row.data) : null; } catch {}
-  return { data, updated_at: row?.updated_at || null };
+const PARTES_COM = ['barbearia', 'extras', 'assinatura', 'produtos'];
+const needComissoes = (req, res, next) => (access.canPage(req.access, 'comissoes') ? next() : deny(res));
+async function saveMonthly(q, y, m, kind, data) {
+  await q.run(`INSERT INTO monthly_reports(year, month, kind, data, updated_at) VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(year, month, kind) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`, y, m, kind, JSON.stringify(data));
 }
-const somaComissoes = (lista) => Object.fromEntries(COM_NUM.map((k) => [k, metrics.round2(lista.reduce((a, x) => a + (Number(x[k]) || 0), 0))]));
-app.get('/api/comissoes', auth.requireAuth, (req, res, next) => (access.canPage(req.access, 'comissoes') ? next() : deny(res)), wrap(async (req) => {
+app.get('/api/comissoes', auth.requireAuth, needComissoes, wrap(async (req) => {
   const { y, m } = ym(req.query);
-  const { data, updated_at } = await readComissoes(y, m);
-  const pros = await db.all('SELECT id, name FROM professionals');
-  let lista = (data?.lista || []).map((x) => ({ ...x, nome: pros.find((p) => p.id === x.professional_id)?.name || x.nome }));
+  const r = await comissoes.calcular(y, m);
   const restrito = access.ownOnly(req.access);
-  if (restrito) lista = lista.filter((x) => x.professional_id === req.access.professional_id);
-  lista.sort((a, b) => b.total_liquido - a.total_liquido);
-  return { ano: y, mes: m, mes_nome: metrics.MONTHS[m - 1], lista, total: somaComissoes(lista), atualizado_em: data?.atualizado || updated_at, restrito };
+  const lista = restrito ? r.linhas.filter((x) => x.professional_id === req.access.professional_id) : r.linhas;
+  const soma = (f) => metrics.round2(lista.reduce((t, x) => t + (Number(f(x)) || 0), 0));
+  const total = {
+    ...Object.fromEntries(PARTES_COM.flatMap((k) => [[`${k}_bruto`, soma((x) => x.partes[k].bruto)], [`${k}_comissao`, soma((x) => x.partes[k].comissao)]])),
+    comissao: soma((x) => x.comissao), bonus: soma((x) => x.bonus), vales: soma((x) => x.vales), total_liquido: soma((x) => x.total_liquido),
+  };
+  const regras = req.access.admin ? await getSetting('comissao_regras') : undefined;
+  return { ano: y, mes: m, mes_nome: metrics.MONTHS[m - 1], lista, total, atualizado_em: r.atualizado_em, tem_bruto: r.tem_bruto, taxa_cashbarber: r.taxa_cashbarber, regras, restrito };
 }));
-// edição manual de uma linha (ou criação, para quem não veio do CashBarber)
+// edição manual da base do CashBarber de um profissional (comissão do avulso, assinatura, produtos, bônus e vales do CashBarber)
 app.put('/api/admin/comissoes/:id', auth.requireAdmin, wrap(async (req) => {
   const { y, m } = ym(req.body || {});
   const pid = Number(req.params.id);
   const pro = await db.get('SELECT id, name FROM professionals WHERE id = ?', pid);
   if (!pro) throw new Error('Profissional não encontrado');
-  const { data } = await readComissoes(y, m);
-  const lista = (data?.lista || []).filter((x) => x.professional_id !== pid);
-  const linha = { professional_id: pid, nome: pro.name, ...Object.fromEntries(COM_NUM.map((k) => [k, metrics.round2(Math.max(0, webhook.toNumber(req.body[k])))])) };
-  lista.push(linha);
+  const n = (k) => metrics.round2(Math.max(0, webhook.toNumber(req.body[k])));
   await tx(async (q) => {
-    await q.run(`INSERT INTO monthly_reports(year, month, kind, data, updated_at) VALUES(?, ?, 'comissoes', ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(year, month, kind) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`, y, m, JSON.stringify({ ...(data || {}), lista, ...somaComissoes(lista), atualizado: new Date().toISOString() }));
-    await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', pid, y, m);
-    await q.run('UPDATE professional_monthly SET comissao = ?, updated_at = CURRENT_TIMESTAMP WHERE professional_id = ? AND year = ? AND month = ?', linha.total_liquido, pid, y, m);
+    const { data } = await comissoes.report(q, y, m, 'comissoes');
+    const lista = (data?.lista || []).filter((x) => x.professional_id !== pid);
+    const linha = { professional_id: pid, nome: pro.name, avulso_bruto: n('avulso'), avulso_liquido: n('avulso'), assinatura_bruto: n('assinatura'), assinatura_liquido: n('assinatura'),
+      produtos_bruto: n('produtos'), produtos_liquido: n('produtos'), bonus: n('bonus'), vales: n('vales_cashbarber') };
+    linha.total_bruto = metrics.round2(linha.avulso_bruto + linha.assinatura_bruto + linha.produtos_bruto);
+    linha.total_liquido = metrics.round2(linha.total_bruto + linha.bonus - linha.vales);
+    lista.push(linha);
+    await saveMonthly(q, y, m, 'comissoes', { ...(data || {}), lista, atualizado: new Date().toISOString() });
+    await comissoes.sincronizar(y, m, q);
   });
   return { ok: true };
 }));
 app.delete('/api/admin/comissoes/:id', auth.requireAdmin, wrap(async (req) => {
   const { y, m } = ym(req.query);
   const pid = Number(req.params.id);
-  const { data } = await readComissoes(y, m);
-  if (!data) return { ok: true };
-  const lista = (data.lista || []).filter((x) => x.professional_id !== pid);
-  await db.run("UPDATE monthly_reports SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE year = ? AND month = ? AND kind = 'comissoes'", JSON.stringify({ ...data, lista, ...somaComissoes(lista) }), y, m);
-  await db.run('UPDATE professional_monthly SET comissao = 0 WHERE professional_id = ? AND year = ? AND month = ?', pid, y, m);
+  await tx(async (q) => {
+    for (const kind of ['comissoes', 'vales']) {
+      const { data } = await comissoes.report(q, y, m, kind);
+      if (data) await saveMonthly(q, y, m, kind, { ...data, lista: (data.lista || []).filter((x) => x.professional_id !== pid) });
+    }
+    await q.run('UPDATE professional_monthly SET comissao = 0 WHERE professional_id = ? AND year = ? AND month = ?', pid, y, m);
+  });
+  return { ok: true };
+}));
+// vales lançados no painel: saem do "A receber" do barbeiro no mês
+app.post('/api/admin/comissoes/:id/vales', auth.requireAdmin, wrap(async (req) => {
+  const { y, m } = ym(req.body || {});
+  const pid = Number(req.params.id);
+  if (!(await db.get('SELECT id FROM professionals WHERE id = ?', pid))) throw new Error('Profissional não encontrado');
+  const valor = metrics.round2(webhook.toNumber(req.body.valor));
+  if (!(valor > 0)) throw new Error('Informe o valor do vale');
+  await tx(async (q) => {
+    const { data } = await comissoes.report(q, y, m, 'vales');
+    const lista = [...(data?.lista || []), { id: crypto.randomUUID(), professional_id: pid, valor, descricao: String(req.body.descricao || '').trim().slice(0, 120), data: /^\d{4}-\d{2}-\d{2}$/.test(req.body.data || '') ? req.body.data : metrics.todayIso(), criado_em: new Date().toISOString() }];
+    await saveMonthly(q, y, m, 'vales', { lista });
+    await comissoes.sincronizar(y, m, q);
+  });
+  return { ok: true };
+}));
+app.delete('/api/admin/comissoes/vales/:valeId', auth.requireAdmin, wrap(async (req) => {
+  const { y, m } = ym(req.query);
+  await tx(async (q) => {
+    const { data } = await comissoes.report(q, y, m, 'vales');
+    const v = (data?.lista || []).find((x) => x.id === req.params.valeId);
+    if (!v) throw new Error('Vale não encontrado');
+    await saveMonthly(q, y, m, 'vales', { lista: data.lista.filter((x) => x.id !== v.id) });
+    await comissoes.sincronizar(y, m, q);
+  });
+  return { ok: true };
+}));
+// taxas: a do CashBarber e a de assinatura de cada barbeiro (vazio = a do CashBarber)
+app.put('/api/admin/comissoes-regras', auth.requireAdmin, wrap(async (req) => {
+  const b = req.body || {};
+  const taxa = Number(webhook.toNumber(b.taxa_cashbarber)) || 40;
+  if (taxa <= 0 || taxa > 100) throw new Error('Taxa inválida');
+  const assinatura = {};
+  for (const [k, v] of Object.entries(b.assinatura || {})) {
+    if (v === '' || v == null) continue;
+    const t = Number(webhook.toNumber(v));
+    if (!(t >= 0 && t <= 100)) throw new Error('Taxa de assinatura inválida');
+    assinatura[String(Number(k))] = t;
+  }
+  // as taxas por id passam a valer no lugar das padrão por nome
+  await setSetting('comissao_regras', { taxa_cashbarber: taxa, assinatura, assinatura_por_nome: {} });
+  const meses = await db.all("SELECT DISTINCT year, month FROM monthly_reports WHERE kind = 'comissoes'");
+  for (const r of meses) await comissoes.sincronizar(r.year, r.month);
   return { ok: true };
 }));
 app.get('/api/atividade', auth.requireAuth, needShop, wrap(async (req) => {
@@ -485,6 +536,7 @@ app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
   const plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
   if (!req.body.confirmar) return { plan };
   const result = await importer.apply(plan);
+  if (plan.ano && plan.mes && (plan.comissoes || plan.bruto_pro)) await comissoes.sincronizar(plan.ano, plan.mes);
   await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios });
   return { result, plan };
 }));
@@ -538,6 +590,7 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
     }
   }
   const result = await importer.apply(plan);
+  if (y && m && (plan.comissoes || plan.bruto_pro)) await comissoes.sincronizar(y, m);
   await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, origem: 'robô', ignorados_por_seguranca: ignoradosPorSeguranca });
   return {
     result, relatorios: plan.relatorios, ignorados: plan.ignorados, ignorados_por_seguranca: ignoradosPorSeguranca,

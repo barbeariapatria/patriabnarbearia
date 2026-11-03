@@ -1321,7 +1321,8 @@
   // ============================================================ Comissões
   // Vem do CashBarber (Gestão → Gerar comissões) pelo robô, todo dia; o administrador também pode editar.
   const COM_PARTES = [
-    ['avulso', 'Serviços avulsos'], ['assinatura', 'Serviços de assinatura'], ['produtos', 'Produtos'],
+    ['barbearia', 'Barbearia', 'Cabelo, barba, cabelo e barba e pezinho'], ['extras', 'Serviços extras', 'Demais serviços avulsos'],
+    ['assinatura', 'Assinatura', 'Parte do barbeiro no pote do clube'], ['produtos', 'Produtos', 'Venda de produtos (sem o bar)'],
   ];
   // jsPDF só é carregado quando alguém pede um PDF
   let pdfLib = null;
@@ -1341,47 +1342,56 @@
     return pdfLib;
   }
   const fileSafe = (t) => String(t).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  const dataBR = (d) => (d ? d.split('-').reverse().join('/') : '');
+  const todayIsoLocal = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
   async function comissaoPdf(c, info) {
     const { jsPDF, logo, dims } = await getPdf();
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
     const W = doc.internal.pageSize.getWidth();
     const gold = [201, 162, 39]; const ink = [20, 20, 20]; const soft = [110, 110, 110];
-    // cabeçalho preto com o logo
+    const head = { fillColor: [12, 12, 12], textColor: gold, fontStyle: 'bold' };
+    const styles = { font: 'helvetica', fontSize: 10, cellPadding: 3, textColor: ink, lineColor: [225, 225, 225] };
     doc.setFillColor(12, 12, 12); doc.rect(0, 0, W, 42, 'F');
     if (logo && dims) { const h = 24; const w = (dims.w / dims.h) * h; doc.addImage(logo, 'PNG', 14, 9, Math.min(w, 70), h * (Math.min(w, 70) / w)); }
     doc.setTextColor(...gold); doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
     doc.text('DEMONSTRATIVO DE COMISSÃO', W - 14, 19, { align: 'right' });
     doc.setTextColor(220, 220, 220); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
     doc.text(`${info.mes_nome} de ${info.ano}`, W - 14, 26, { align: 'right' });
-    // profissional e valor a receber
     doc.setTextColor(...soft); doc.setFontSize(9); doc.text('PROFISSIONAL', 14, 56);
     doc.setTextColor(...ink); doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text(c.nome, 14, 64);
     doc.setDrawColor(...gold); doc.setLineWidth(0.6); doc.roundedRect(W - 84, 49, 70, 22, 2, 2, 'S');
     doc.setTextColor(...soft); doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.text('TOTAL A RECEBER', W - 49, 56, { align: 'center' });
     doc.setTextColor(...ink); doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.text(brl(c.total_liquido), W - 49, 66, { align: 'center' });
-    // detalhamento
-    const body = COM_PARTES.map(([k, l]) => [l, brl(c[`${k}_bruto`]), brl(c[`${k}_liquido`])]);
+    const bruto = (v) => (v == null ? '—' : brl(v));
     doc.autoTable({
-      startY: 80, head: [['Descrição', 'Valor bruto', 'Valor líquido']], body,
-      foot: [['Total', brl(c.total_bruto), brl(Math.round(COM_PARTES.reduce((a, [k]) => a + (Number(c[`${k}_liquido`]) || 0), 0) * 100) / 100)]],
-      theme: 'grid', styles: { font: 'helvetica', fontSize: 10, cellPadding: 3.2, textColor: ink, lineColor: [225, 225, 225] },
-      headStyles: { fillColor: [12, 12, 12], textColor: gold, fontStyle: 'bold' }, footStyles: { fillColor: [245, 240, 225], textColor: ink, fontStyle: 'bold' },
+      startY: 80, head: [['Descrição', 'Valor bruto', 'Comissão']],
+      body: COM_PARTES.map(([k, l]) => [k === 'assinatura' ? `${l} (${String(c.partes[k].taxa).replace('.', ',')}%)` : l, bruto(c.partes[k].bruto), brl(c.partes[k].comissao)]),
+      foot: [['Total', brl(COM_PARTES.reduce((t, [k]) => t + (Number(c.partes[k].bruto) || 0), 0)), brl(c.comissao)]],
+      theme: 'grid', styles, headStyles: head, footStyles: { fillColor: [245, 240, 225], textColor: ink, fontStyle: 'bold' },
       columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } }, margin: { left: 14, right: 14 },
     });
-    let y = doc.lastAutoTable.finalY + 8;
+    const ajustes = [['Comissões', brl(c.comissao)], ['Bônus', `+ ${brl(c.bonus)}`]];
+    if (c.vales_cashbarber) ajustes.push(['Vales (CashBarber)', `- ${brl(c.vales_cashbarber)}`]);
+    for (const v of c.vales_painel) ajustes.push([`Vale ${dataBR(v.data)}${v.descricao ? ` · ${v.descricao}` : ''}`, `- ${brl(v.valor)}`]);
     doc.autoTable({
-      startY: y, head: [['Ajustes', 'Valor']],
-      body: [['Bônus', `+ ${brl(c.bonus)}`], ['Vales / adiantamentos', `- ${brl(c.vales)}`]],
+      startY: doc.lastAutoTable.finalY + 8, head: [['Ajustes', 'Valor']], body: ajustes,
       foot: [['Total líquido a receber', brl(c.total_liquido)]],
-      theme: 'grid', styles: { font: 'helvetica', fontSize: 10, cellPadding: 3.2, textColor: ink, lineColor: [225, 225, 225] },
-      headStyles: { fillColor: [12, 12, 12], textColor: gold, fontStyle: 'bold' }, footStyles: { fillColor: gold, textColor: [12, 12, 12], fontStyle: 'bold', fontSize: 11 },
+      theme: 'grid', styles, headStyles: head, footStyles: { fillColor: gold, textColor: [12, 12, 12], fontStyle: 'bold', fontSize: 11 },
       columnStyles: { 1: { halign: 'right' } }, margin: { left: 14, right: 14 },
     });
-    y = doc.lastAutoTable.finalY + 10;
+    if (c.servicos?.length) {
+      doc.autoTable({
+        startY: doc.lastAutoTable.finalY + 8, head: [['Serviços realizados', 'Tipo', 'Qtd.', 'Valor bruto']],
+        body: [...c.servicos].sort((a, b) => b.faturado - a.faturado).map((x) => [x.nome, x.barbearia ? 'Barbearia' : 'Extra', String(x.quantidade), brl(x.faturado)]),
+        theme: 'grid', styles: { ...styles, fontSize: 9, cellPadding: 2.2 }, headStyles: head,
+        columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' } }, margin: { left: 14, right: 14 },
+      });
+    }
+    let y = doc.lastAutoTable.finalY + 8;
+    if (y > 250) { doc.addPage(); y = 20; }
     doc.setTextColor(...soft); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
-    doc.text(doc.splitTextToSize('Valores do CashBarber (Gestão > Gerar comissões) no período. Itens do bar não entram na comissão.', W - 28), 14, y);
-    // assinaturas
-    const yA = Math.max(y + 30, 240);
+    doc.text(doc.splitTextToSize('Comissões do CashBarber (Gestão > Gerar comissões) no período; bruto pelos relatórios de serviços e vendas de cada barbeiro. Itens do bar não entram na comissão.', W - 28), 14, y);
+    const yA = Math.max(y + 24, 255);
     doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.3);
     doc.line(14, yA, 92, yA); doc.line(W - 92, yA, W - 14, yA);
     doc.setFontSize(9); doc.text(c.nome, 53, yA + 5, { align: 'center' }); doc.text('Pátria Barbearia', W - 53, yA + 5, { align: 'center' });
@@ -1393,32 +1403,36 @@
     const d = await api(`/api/comissoes?ano=${state.y}&mes=${state.m}`);
     $('#pageSub').textContent = d.restrito ? `Sua comissão em ${d.mes_nome} ${d.ano}` : `O que cada profissional recebe em ${d.mes_nome} ${d.ano} · atualizado pelo robô todo dia às 20h`;
     const T = d.total;
-    const parte = (c, k) => `<td class="r num">${brl(c[`${k}_bruto`])}${Math.abs((c[`${k}_bruto`] || 0) - (c[`${k}_liquido`] || 0)) > 0.004 ? `<div class="muted" style="font-size:11.5px">líq. ${brl(c[`${k}_liquido`])}</div>` : ''}</td>`;
     const admin = isAdmin();
     const semLinha = admin ? state.pros.filter((p) => p.active && !d.lista.some((c) => c.professional_id === p.id)) : [];
+    const cel = (p, extra = '') => `<td class="r num"><div>${p.bruto == null ? '<span class="muted">—</span>' : brl(p.bruto)}</div><div style="font-size:12px;color:var(--accent)">com. ${brl(p.comissao)}${extra}</div></td>`;
     view.innerHTML = `
       <div class="grid g-auto">
-        ${kpi({ label: d.restrito ? 'A receber' : 'Total a pagar', value: brl(T.total_liquido), foot: `Bruto ${brl(T.total_bruto)}`, ic: 'cash' })}
-        ${kpi({ label: 'Serviços avulsos', value: brl(T.avulso_liquido), foot: `Bruto ${brl(T.avulso_bruto)}`, ic: 'scissors' })}
-        ${kpi({ label: 'Serviços de assinatura', value: brl(T.assinatura_liquido), foot: `Bruto ${brl(T.assinatura_bruto)}`, ic: 'star' })}
-        ${kpi({ label: 'Bônus e vales', value: brl(T.bonus - T.vales), foot: `Bônus ${brl(T.bonus)} · Vales ${brl(T.vales)}`, ic: 'ticket' })}
+        ${kpi({ label: d.restrito ? 'A receber' : 'Total a pagar', value: brl(T.total_liquido), foot: `Comissões ${brl(T.comissao)} · vales ${brl(T.vales)}`, ic: 'cash' })}
+        ${kpi({ label: 'Barbearia', value: brl(T.barbearia_comissao), foot: `Bruto ${brl(T.barbearia_bruto)}`, ic: 'scissors' })}
+        ${kpi({ label: 'Serviços extras', value: brl(T.extras_comissao), foot: `Bruto ${brl(T.extras_bruto)}`, ic: 'spark' })}
+        ${kpi({ label: 'Assinatura', value: brl(T.assinatura_comissao), foot: `Bruto ${brl(T.assinatura_bruto)}`, ic: 'star' })}
+        ${kpi({ label: 'Produtos', value: brl(T.produtos_comissao), foot: `Bruto ${brl(T.produtos_bruto)}`, ic: 'bag' })}
       </div>
+      ${admin && d.lista.length && !d.tem_bruto ? `<div class="banner" style="margin-top:14px">${icon('alert')}<div class="grow">O bruto de Barbearia, Serviços extras e Produtos de cada barbeiro chega na próxima execução do robô. Até lá, a comissão do avulso aparece toda em Barbearia.</div></div>` : ''}
       <div class="card fade-in" style="margin-top:18px">
         <div class="card-h"><h3>${d.restrito ? 'Minha comissão' : 'Comissão por profissional'}</h3><div class="grow"></div>
+          ${admin ? `<button class="btn btn-sm" id="regras">${icon('target')} Taxas</button>` : ''}
           ${d.lista.length > 1 ? `<button class="btn btn-sm" id="pdfAll">${icon('download')} PDF de todos</button>` : ''}
           ${admin && semLinha.length ? `<button class="btn btn-sm" id="addCom">${icon('plus')} Lançar</button>` : ''}</div>
         ${d.lista.length ? `<div class="table-wrap"><table class="t">
-          <thead><tr><th>Profissional</th><th class="r">Serv. avulsos</th><th class="r">Serv. assinatura</th><th class="r">Produtos</th><th class="r">Bônus</th><th class="r">Vales</th><th class="r">Total bruto</th><th class="r">A receber</th><th></th></tr></thead>
+          <thead><tr><th>Profissional</th>${COM_PARTES.map(([, l]) => `<th class="r">${l}</th>`).join('')}<th class="r">Bônus</th><th class="r">Vales</th><th class="r">A receber</th><th></th></tr></thead>
           <tbody>${d.lista.map((c) => `<tr>
             <td><span style="display:inline-flex;align-items:center;gap:10px"><span class="avatar" style="width:30px;height:30px;font-size:11px;background:${proColor(c.professional_id)};color:#fff;border:none">${esc(initials(c.nome))}</span><b>${esc(c.nome)}</b></span></td>
-            ${parte(c, 'avulso')}${parte(c, 'assinatura')}${parte(c, 'produtos')}
-            <td class="r num">${brl(c.bonus)}</td><td class="r num">${c.vales ? `- ${brl(c.vales)}` : brl(0)}</td><td class="r num">${brl(c.total_bruto)}</td>
-            <td class="r num"><b style="color:var(--accent)">${brl(c.total_liquido)}</b></td>
-            <td class="r" style="white-space:nowrap"><button class="btn btn-sm" data-pdf="${c.professional_id}">${icon('download')} PDF</button>${admin ? ` <button class="btn btn-sm" data-edit="${c.professional_id}" title="Editar">${icon('edit')}</button>` : ''}</td></tr>`).join('')}</tbody>
-          ${d.lista.length > 1 ? `<tfoot><tr><td><b>Total</b></td><td class="r num"><b>${brl(T.avulso_bruto)}</b></td><td class="r num"><b>${brl(T.assinatura_bruto)}</b></td><td class="r num"><b>${brl(T.produtos_bruto)}</b></td><td class="r num"><b>${brl(T.bonus)}</b></td><td class="r num"><b>${T.vales ? `- ${brl(T.vales)}` : brl(0)}</b></td><td class="r num"><b>${brl(T.total_bruto)}</b></td><td class="r num"><b>${brl(T.total_liquido)}</b></td><td></td></tr></tfoot>` : ''}
+            ${cel(c.partes.barbearia)}${cel(c.partes.extras)}${cel(c.partes.assinatura, ` · ${String(c.partes.assinatura.taxa).replace('.', ',')}%`)}${cel(c.partes.produtos)}
+            <td class="r num">${brl(c.bonus)}</td>
+            <td class="r num">${c.vales ? `<span style="color:var(--bad, #e5484d)">- ${brl(c.vales)}</span>` : brl(0)}${c.vales_painel.length ? `<div class="muted" style="font-size:11.5px">${c.vales_painel.length} no painel</div>` : ''}</td>
+            <td class="r num"><b style="color:var(--accent);font-size:15px">${brl(c.total_liquido)}</b></td>
+            <td class="r" style="white-space:nowrap"><button class="btn btn-sm" data-pdf="${c.professional_id}">${icon('download')} PDF</button>${admin ? ` <button class="btn btn-sm" data-vale="${c.professional_id}">${icon('plus')} Vale</button> <button class="btn btn-sm" data-edit="${c.professional_id}" title="Editar">${icon('edit')}</button>` : ''}</td></tr>`).join('')}</tbody>
+          ${d.lista.length > 1 ? `<tfoot><tr><td><b>Total</b></td>${COM_PARTES.map(([k]) => `<td class="r num"><b>${brl(T[`${k}_bruto`])}</b><div style="font-size:12px;color:var(--accent)">com. ${brl(T[`${k}_comissao`])}</div></td>`).join('')}<td class="r num"><b>${brl(T.bonus)}</b></td><td class="r num"><b>${T.vales ? `- ${brl(T.vales)}` : brl(0)}</b></td><td class="r num"><b>${brl(T.total_liquido)}</b></td><td></td></tr></tfoot>` : ''}
         </table></div>
-        <p class="muted" style="font-size:12px;margin:10px 0 0">Valores de Gestão → Gerar comissões do CashBarber${d.atualizado_em ? ` · atualizado em ${new Date(d.atualizado_em).toLocaleString('pt-BR')}` : ''}. "A receber" = total líquido (com bônus e descontando vales).</p>`
-        : emptyState(`Sem comissões em ${d.mes_nome}`, d.restrito ? 'A comissão do mês ainda não foi lançada.' : 'O robô traz a tela Gerar comissões do CashBarber todo dia às 20h. Você também pode lançar à mão.', admin && semLinha.length ? `<button class="btn btn-primary" id="addCom2">Lançar comissão</button>` : '')}
+        <p class="muted" style="font-size:12px;margin:10px 0 0">Em cada coluna: valor bruto do barbeiro e, embaixo, a comissão. Barbearia = cabelo, barba, cabelo e barba e pezinho; o resto do avulso são os serviços extras. "A receber" = comissões + bônus − vales${d.atualizado_em ? ` · CashBarber atualizado em ${new Date(d.atualizado_em).toLocaleString('pt-BR')}` : ''}.</p>`
+        : emptyState(`Sem comissões em ${d.mes_nome}`, d.restrito ? 'A comissão do mês ainda não foi lançada.' : 'O robô traz a tela Gerar comissões do CashBarber todo dia às 20h. Você também pode lançar à mão.', admin && semLinha.length ? '<button class="btn btn-primary" id="addCom2">Lançar comissão</button>' : '')}
       </div>`;
     const gerar = async (lista, b) => {
       const txt = b?.innerHTML; if (b) { b.disabled = true; b.innerHTML = `${icon('refresh')} Gerando…`; }
@@ -1427,17 +1441,49 @@
     $$('[data-pdf]', view).forEach((b) => b.addEventListener('click', () => gerar([d.lista.find((c) => c.professional_id === Number(b.dataset.pdf))], b)));
     $('#pdfAll', view)?.addEventListener('click', (e) => gerar(d.lista, e.currentTarget));
     if (!admin) return;
+    const field = (k, label, v, ph = '0,00') => `<div class="field"><label>${label}</label><input class="input num" name="${k}" value="${v ?? ''}" inputmode="decimal" placeholder="${ph}"></div>`;
+    // vales do mês: cada um sai do "A receber"
+    const vales = (pid) => {
+      const c = d.lista.find((x) => x.professional_id === pid);
+      modal({
+        title: `Vales · ${esc(c.nome)} · ${d.mes_nome} ${d.ano}`,
+        body: `${c.vales_cashbarber ? `<p class="muted" style="margin:0 0 10px">Vales do CashBarber: <b>${brl(c.vales_cashbarber)}</b></p>` : ''}
+          ${c.vales_painel.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Data</th><th>Descrição</th><th class="r">Valor</th><th></th></tr></thead><tbody>${c.vales_painel.map((v) => `<tr><td>${dataBR(v.data)}</td><td>${esc(v.descricao || '—')}</td><td class="r num">- ${brl(v.valor)}</td><td class="r"><button class="btn btn-sm btn-danger" data-delvale="${v.id}" title="Apagar">${icon('trash')}</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0 0 10px">Nenhum vale lançado no painel.</p>'}
+          <form id="valeForm"><div class="form-grid g3" style="margin-top:14px">
+            ${field('valor', 'Valor do vale (R$)', '')}
+            <div class="field"><label>Data</label><input class="input" type="date" name="data" value="${todayIsoLocal()}"></div>
+            <div class="field"><label>Descrição</label><input class="input" name="descricao" maxlength="120" placeholder="Ex.: adiantamento"></div>
+          </div></form>
+          <p class="muted" style="font-size:12px;margin:6px 0 0">A receber agora: <b>${brl(c.total_liquido)}</b>. O vale é descontado na hora.</p>`,
+        footer: `<button class="btn" data-close>Fechar</button><button class="btn btn-primary" data-save>${icon('plus')} Adicionar vale</button>`,
+        onMount: (el, close) => {
+          $('[data-save]', el).onclick = async () => {
+            const body = Object.fromEntries(new FormData($('#valeForm', el)));
+            body.valor = parseBR(body.valor); body.ano = state.y; body.mes = state.m;
+            try { await api(`/api/admin/comissoes/${pid}/vales`, { method: 'POST', body }); toast(`Vale de ${brl(body.valor)} descontado`); close(); route(); } catch (e) { toast(e.message, 'err'); }
+          };
+          $$('[data-delvale]', el).forEach((b) => b.addEventListener('click', async () => {
+            if (!(await confirmDialog('Apagar este vale?', { ok: 'Apagar' }))) return;
+            try { await api(`/api/admin/comissoes/vales/${b.dataset.delvale}?ano=${state.y}&mes=${state.m}`, { method: 'DELETE' }); toast('Vale apagado'); close(); route(); } catch (e) { toast(e.message, 'err'); }
+          }));
+        },
+      });
+    };
     const editar = (pid) => {
-      const c = d.lista.find((x) => x.professional_id === pid) || {};
-      const f = (k, label) => `<div class="field"><label>${label}</label><input class="input num" name="${k}" value="${num2(c[k])}" inputmode="decimal" placeholder="0,00"></div>`;
-      const escolha = !pid;
+      const c = d.lista.find((x) => x.professional_id === pid);
+      const escolha = !c;
+      const v = (x) => num2(x);
       modal({
         wide: true,
         title: `${escolha ? 'Lançar comissão' : esc(c.nome)} · ${d.mes_nome} ${d.ano}`,
         body: `<form id="comForm">${escolha ? `<div class="field"><label>Profissional</label><select class="input" name="pid">${semLinha.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>` : ''}
+          <p class="muted" style="font-size:12.5px;margin:0 0 12px">Valores de comissão como no CashBarber. O avulso é dividido entre Barbearia e Serviços extras pelo bruto de cada barbeiro, e a taxa de assinatura de cada um é aplicada em cima (botão Taxas).</p>
           <div class="form-grid g3">
-          ${COM_PARTES.map(([k, l]) => `${f(`${k}_bruto`, `${l} · bruto (R$)`)}${f(`${k}_liquido`, `${l} · líquido (R$)`)}`).join('')}
-          ${f('bonus', 'Bônus (R$)')}${f('vales', 'Vales (R$)')}${f('total_bruto', 'Total bruto (R$) — vazio = soma')}${f('total_liquido', 'A receber (R$) — vazio = líquidos + bônus − vales')}
+          ${field('avulso', 'Comissão de serviços avulsos (R$)', c ? v(c.partes.barbearia.comissao + c.partes.extras.comissao) : '')}
+          ${field('assinatura', `Comissão de assinatura no CashBarber (R$, a ${d.taxa_cashbarber}%)`, c ? v(c.partes.assinatura.recalculada ? (c.partes.assinatura.bruto * d.taxa_cashbarber) / 100 : c.partes.assinatura.comissao) : '')}
+          ${field('produtos', 'Comissão de produtos (R$)', c ? v(c.partes.produtos.comissao) : '')}
+          ${field('bonus', 'Bônus (R$)', c ? v(c.bonus) : '')}
+          ${field('vales_cashbarber', 'Vales do CashBarber (R$)', c ? v(c.vales_cashbarber) : '')}
         </div></form>`,
         footer: `${!escolha ? `<button class="btn btn-danger" data-del style="margin-right:auto">${icon('trash')} Apagar</button>` : ''}<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>${icon('check')} Salvar</button>`,
         onMount: (el, close) => {
@@ -1445,8 +1491,6 @@
             const body = Object.fromEntries(new FormData($('#comForm', el)));
             const id = escolha ? Number(body.pid) : pid;
             for (const k of Object.keys(body)) if (k !== 'pid') body[k] = parseBR(body[k]);
-            if (!String($('[name="total_bruto"]', el).value).trim()) body.total_bruto = COM_PARTES.reduce((a, [k]) => a + body[`${k}_bruto`], 0);
-            if (!String($('[name="total_liquido"]', el).value).trim()) body.total_liquido = COM_PARTES.reduce((a, [k]) => a + body[`${k}_liquido`], 0) + body.bonus - body.vales;
             body.ano = state.y; body.mes = state.m;
             try { await api(`/api/admin/comissoes/${id}`, { method: 'PUT', body }); toast('Comissão salva'); close(); route(); } catch (e) { toast(e.message, 'err'); }
           };
@@ -1458,9 +1502,37 @@
         },
       });
     };
+    const regras = () => {
+      const r = d.regras || {};
+      const taxaDe = (p) => {
+        const porId = r.assinatura?.[String(p.id)];
+        if (porId != null) return porId;
+        const n = String(p.name).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+        const hit = Object.entries(r.assinatura_por_nome || {}).find(([k]) => n === k || n.split(' ')[0] === k);
+        return hit ? hit[1] : '';
+      };
+      const lista = state.pros.filter((p) => p.active || d.lista.some((c) => c.professional_id === p.id));
+      modal({
+        title: 'Taxas de comissão',
+        body: `<form id="regForm">
+          <div class="field"><label>Taxa de assinatura usada no CashBarber (%)</label><input class="input num" name="taxa_cashbarber" value="${r.taxa_cashbarber ?? d.taxa_cashbarber}" inputmode="decimal"></div>
+          <p class="muted" style="font-size:12.5px;margin:4px 0 12px">Taxa de assinatura de cada barbeiro. Vazio = a do CashBarber. Quem tiver outra taxa tem a comissão de assinatura recalculada (ex.: 35% → comissão do CashBarber × 35 ÷ ${d.taxa_cashbarber}).</p>
+          <div class="form-grid g3">${lista.map((p) => `<div class="field"><label>${esc(p.name)} (%)</label><input class="input num" data-pid="${p.id}" value="${taxaDe(p)}" inputmode="decimal" placeholder="${r.taxa_cashbarber ?? d.taxa_cashbarber}"></div>`).join('')}</div></form>`,
+        footer: `<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>${icon('check')} Salvar</button>`,
+        onMount: (el, close) => {
+          $('[data-save]', el).onclick = async () => {
+            const body = { taxa_cashbarber: parseBR($('[name="taxa_cashbarber"]', el).value), assinatura: {} };
+            $$('[data-pid]', el).forEach((i) => { if (i.value.trim() !== '') body.assinatura[i.dataset.pid] = parseBR(i.value); });
+            try { await api('/api/admin/comissoes-regras', { method: 'PUT', body }); toast('Taxas salvas'); close(); route(); } catch (e) { toast(e.message, 'err'); }
+          };
+        },
+      });
+    };
+    $$('[data-vale]', view).forEach((b) => b.addEventListener('click', () => vales(Number(b.dataset.vale))));
     $$('[data-edit]', view).forEach((b) => b.addEventListener('click', () => editar(Number(b.dataset.edit))));
     $('#addCom', view)?.addEventListener('click', () => editar(null));
     $('#addCom2', view)?.addEventListener('click', () => editar(null));
+    $('#regras', view)?.addEventListener('click', regras);
   }
 
   // ============================================================ Admin · Usuários

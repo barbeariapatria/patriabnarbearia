@@ -482,8 +482,17 @@ async function observarRespostas(resp) {
   } catch {}
 }
 // coloca a filial nos pedidos de relatório que saem sem ela (só campos de filial vazios; o resto fica igual)
+// modelos dos pedidos de Serviços (10) e Vendas (15), para repetir filtrando por barbeiro
+const MODELOS = {};
 async function ajustarPedido(route) {
   const req = route.request();
+  try {
+    const m = new URL(req.url()).pathname.match(/\/relatorios\/(10|15)$/);
+    if (m && req.method() === 'POST' && req.postData()) {
+      (MODELOS[m[1]] ||= []);
+      if (!MODELOS[m[1]].some((x) => x.corpo === req.postData())) MODELOS[m[1]].push({ url: req.url(), headers: req.headers(), corpo: req.postData() });
+    }
+  } catch {}
   if (!FILIAL_ID || req.method() !== 'POST') return route.continue();
   const corpo = req.postData() || '';
   let obj; try { obj = JSON.parse(corpo); } catch { return route.continue(); }
@@ -795,6 +804,63 @@ function diagnosticoComissoes(csv, comandasCsv) {
         + ` · diferenciada=${typeof j.diferenciada === 'object' ? 'obj' : j.diferenciada} lider=${typeof j.lider === 'object' ? 'obj' : j.lider} fichas=${Array.isArray(j.fichas_geradas) ? `lista(${j.fichas_geradas.length}): ${Object.keys(j.fichas_geradas[0] || {}).join(',')}` : typeof j.fichas_geradas}`);
     });
   } catch (e) { log(`    diag: falhou (${e.message})`); }
+}
+
+// ---------------------------------------------------------------- por barbeiro (Serviços e Vendas)
+// Repete os pedidos de Serviços (10) e Vendas (15) que a própria tela fez, trocando só o campo "barbeiro".
+// Serviços por barbeiro separa Barbearia (cabelo, barba…) de serviços extras; Vendas por barbeiro dá os produtos
+// de cada um (e tira o bar do faturamento dele).
+function equipeDoCsv(txt) {
+  const ls = String(txt || '').replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim()).map((l) => l.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/).map((c) => c.replace(/^"|"$/g, '').trim()));
+  if (!ls.length) return [];
+  const cab = ls[0].map((h) => norm(h));
+  const i = (n) => cab.indexOf(n);
+  return ls.slice(1).filter((r) => norm(r[i('tipo')]) === 'profissional' && r[i('status')] === '1' && !/^recep/i.test(norm(r[i('nome')])))
+    .map((r) => ({ id: r[i('id')], nome: r[i('nome')] })).filter((x) => x.id && x.nome);
+}
+async function porBarbeiro(ctx, equipe, filialId) {
+  const saida = { servicos: [], itens: [] };
+  const linhasDe = async (modelo, campo, valor) => {
+    let corpo; try { corpo = JSON.parse(modelo.corpo); } catch { return null; }
+    corpo[campo] = valor;
+    if (filialId) for (const k of Object.keys(corpo)) if (/filia/i.test(k) && (corpo[k] == null || corpo[k] === '' || (Array.isArray(corpo[k]) && !corpo[k].length))) corpo[k] = Array.isArray(corpo[k]) ? [filialId] : filialId;
+    const r = await ctx.request.post(modelo.url, { headers: { ...modelo.headers, 'content-type': 'application/json' }, data: JSON.stringify(corpo), timeout: 60000 }).catch(() => null);
+    if (!r || !r.ok()) return null;
+    const j = await r.json().catch(() => null);
+    return j ? maiorLista(j) || [] : null;
+  };
+  const soma = (l) => (l || []).reduce((t, x) => t + (Number(x.ags_valor ?? x.total ?? x.sum ?? 0) || 0), 0);
+  for (const [rel, tipo] of [['10', 'servicos'], ['15', 'itens']]) {
+    for (const modelo of MODELOS[rel] || []) {
+      let base; try { base = JSON.parse(modelo.corpo); } catch { continue; }
+      if (!('barbeiro' in base)) { log(`    por barbeiro: o pedido do relatório ${rel} não tem o campo "barbeiro"`); continue; }
+      const totalGeral = soma(await linhasDe(modelo, 'barbeiro', base.barbeiro));
+      // o formato do campo não é conhecido de antemão: lista de ids, id número ou id texto
+      let formato = null;
+      for (const f of [(id) => [Number(id)], (id) => Number(id), (id) => String(id), (id) => [String(id)]]) {
+        const l = await linhasDe(modelo, 'barbeiro', f(equipe[0].id));
+        if (l && (soma(l) < totalGeral - 0.01 || !totalGeral)) { formato = f; break; }
+      }
+      if (!formato) { log(`    por barbeiro: relatório ${rel} não aceitou o filtro de barbeiro (fica sem a divisão)`); continue; }
+      let somaBarbeiros = 0; let n = 0;
+      for (const b of equipe) {
+        const l = await linhasDe(modelo, 'barbeiro', formato(b.id));
+        if (!l) continue;
+        for (const x of l) {
+          if (tipo === 'servicos' && x.ser_nome) saida.servicos.push([b.nome, x.ser_nome, Number(x.ags_qtd_servico ?? x.count ?? 0) || 0, Number(x.ags_valor ?? x.sum ?? 0) || 0]);
+          if (tipo === 'itens' && x.pro_nome) saida.itens.push([b.nome, x.pro_nome, 'PRODUTO', Number(x.count ?? 0) || 0, Number(x.total ?? x.sum ?? 0) || 0]);
+        }
+        somaBarbeiros += soma(l); n++;
+      }
+      log(`    por barbeiro: relatório ${rel} · ${n} barbeiros · soma dos barbeiros ${totalGeral ? `${Math.round((somaBarbeiros / totalGeral) * 1000) / 10}%` : '-'} do total`);
+    }
+  }
+  const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = (cab, ls) => [cab, ...ls].map((r) => r.map(q).join(';')).join('\n');
+  return {
+    servicos_pro: saida.servicos.length ? csv(['PROFISSIONAL', 'SERVICO', 'QUANTIDADE', 'FATURADO'], saida.servicos) : null,
+    itens: saida.itens.length ? csv(['PROFISSIONAL', 'ITEM', 'TIPO', 'QUANTIDADE', 'VALOR TOTAL'], saida.itens) : null,
+  };
 }
 
 // ---------------------------------------------------------------- respostas JSON dos relatórios
@@ -1133,6 +1199,16 @@ async function main() {
         }
         for (const p of ctx.pages()) if (p !== page) await p.close().catch(() => {});
       }
+      // Serviços e produtos de cada barbeiro (precisa da equipe, que é a última página)
+      const equipeAtiva = equipeDoCsv(porTipo.equipe?.text);
+      if (equipeAtiva.length && (MODELOS['10'] || MODELOS['15'])) {
+        try {
+          const pb = await porBarbeiro(ctx, equipeAtiva, FILIAL_ID);
+          if (pb.servicos_pro) { porTipo.servicos_pro = { name: 'servicos_pro.csv', text: pb.servicos_pro }; log(`  Serviços por barbeiro: ${resumoCsv(pb.servicos_pro)}`); }
+          if (pb.itens && !porTipo.itens) { porTipo.itens = { name: 'itens.csv', text: pb.itens }; log(`  Produtos por barbeiro: ${resumoCsv(pb.itens)}`); }
+        } catch (e) { log(`  Por barbeiro: ERRO — ${e.message}`); }
+      }
+      for (const k of Object.keys(MODELOS)) delete MODELOS[k];
       const tipos = Object.keys(porTipo);
       if (!FILIAL_ID) log('  Código da filial Village não apareceu nas respostas do CashBarber (relatórios que pedem filial podem falhar).');
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
