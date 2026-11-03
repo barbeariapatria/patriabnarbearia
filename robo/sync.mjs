@@ -512,7 +512,9 @@ function resumoPedido(req) {
       } };
       walk(obj);
     }
-    return `${req.method()} ${u.pathname}${params.length ? ` [${params.join(', ')}]` : ''}`;
+    let chaves = '';
+    if (MODO === 'testar' && corpo && /relatorios|comiss/i.test(u.pathname)) { try { chaves = ` {campos: ${Object.keys(JSON.parse(corpo)).join(', ')}}`; } catch {} }
+    return `${req.method()} ${u.pathname}${params.length ? ` [${params.join(', ')}]` : ''}${chaves}`;
   } catch { return null; }
 }
 
@@ -764,15 +766,48 @@ async function comissoesDaTela(page) {
   return [cab, ...linhas].map((r) => r.map(q).join(';')).join('\n');
 }
 
+// Modo testar: compara as partes da tela de comissões com o faturamento das comandas, só em proporções
+// (o log do GitHub é público: nada de nomes nem valores)
+function diagnosticoComissoes(csv, comandasCsv) {
+  try {
+    const ler = (txt) => { const ls = txt.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim()).map((l) => l.split(/;(?=(?:[^"]*"[^"]*")*[^"]*$)|,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map((c) => c.replace(/^"|"$/g, '').replace(/""/g, '"').trim()));
+      const cab = ls[0].map((h) => norm(h).toUpperCase()); return ls.slice(1).map((r) => Object.fromEntries(cab.map((h, i) => [h, r[i] ?? ''])));
+    };
+    const din = (v) => { const t = String(v || '').replace(/[R$\s]/g, ''); return Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t) || 0; };
+    const pct = (a, b) => (b ? `${Math.round((a / b) * 1000) / 10}%` : '-');
+    const primeiro = (n) => norm(n).split(' ')[0];
+    const com = ler(csv);
+    const porPro = {};
+    if (comandasCsv) for (const r of ler(comandasCsv)) {
+      const k = primeiro(r.PROFISSIONAL); if (!k) continue;
+      const tipo = norm(r.TIPO); const v = din(r['VALOR COMANDA FECHADA / ASSINATURA'] ?? r.VALOR);
+      porPro[k] ||= { comanda: 0, assinatura: 0 }; porPro[k][/assinat/.test(tipo) ? 'assinatura' : 'comanda'] += v;
+    }
+    com.forEach((r, i) => {
+      const k = primeiro(r.PROFISSIONAL);
+      const j = (COMISSOES_JSON || []).find((x) => primeiro(valorJson(x.nome_barbeiro)) === k) || {};
+      const b = (c) => din(r[`${c} BRUTO`]); const l = (c) => din(r[`${c} LIQUIDO`]);
+      const cm = porPro[k]?.comanda || 0;
+      log(`    diag #${i + 1}: líquido/bruto avulso ${pct(l('SERVICOS AVULSO'), b('SERVICOS AVULSO'))} · assinatura ${pct(l('SERVICOS ASSINATURA'), b('SERVICOS ASSINATURA'))} · produtos ${pct(l('PRODUTOS'), b('PRODUTOS'))}`
+        + ` · avulso bruto / comandas dele ${pct(b('SERVICOS AVULSO'), cm)} · (avulso+produtos) / comandas ${pct(b('SERVICOS AVULSO') + b('PRODUTOS'), cm)}`
+        + ` · json padrão/avulso ${pct(Number(j.comissao_padrao) || 0, b('SERVICOS AVULSO'))} · pote/assinatura ${pct(Number(j.comissao_pote) || 0, b('SERVICOS ASSINATURA'))}`
+        + ` · produtos/produtos ${pct(Number(j.comissao_produtos) || 0, b('PRODUTOS'))} · total json/total tela ${pct(Number(j.total_liquido) || 0, din(r['TOTAL LIQUIDO']))}`
+        + ` · diferenciada=${typeof j.diferenciada === 'object' ? 'obj' : j.diferenciada} lider=${typeof j.lider === 'object' ? 'obj' : j.lider} fichas=${Array.isArray(j.fichas_geradas) ? `lista(${j.fichas_geradas.length}): ${Object.keys(j.fichas_geradas[0] || {}).join(',')}` : typeof j.fichas_geradas}`);
+    });
+  } catch (e) { log(`    diag: falhou (${e.message})`); }
+}
+
 // ---------------------------------------------------------------- respostas JSON dos relatórios
 // O CashBarber monta a tabela a partir da resposta de /api/painel/relatorios/N. Ela traz TODAS as linhas
 // do período (a tela mostra só 10 por página), então serve de fonte quando o botão de exportar não baixa nada.
 const RESP_REL = [];
+let COMISSOES_JSON = null;
 async function guardarRelatorio(resp) {
   try {
     if (/comiss/i.test(new URL(resp.url()).pathname) && /json/i.test(resp.headers()['content-type'] || '')) {
       const j = await resp.json().catch(() => null);
       const l = j && maiorLista(j);
+      if (l) COMISSOES_JSON = l;
       log(`    resposta ${new URL(resp.url()).pathname} (${resp.status()}): ${l ? `${l.length} linhas · campos: ${camposDoJson(l)}` : `campos: ${j && typeof j === 'object' ? Object.keys(j).slice(0, 20).join(', ') : '-'}`}`);
     }
     if (!/\/api\/painel\/relatorios\//.test(resp.url()) || resp.status() !== 200) return;
@@ -1013,7 +1048,12 @@ async function main() {
             const como = await definirPeriodo(page, per);
             const filial = await escolherFilial(page);
             const datas = await conferirDatas(page, per);
+            const pedidosCom = [];
+            const ouvirCom = (r) => { if (/comiss/i.test(r.url()) && r.method() === 'POST') pedidosCom.push(resumoPedido(r)); };
+            page.on('request', ouvirCom);
             const filtrou = await filtrarComissoes(page);
+            page.off('request', ouvirCom);
+            if (MODO === 'testar') for (const x of pedidosCom.slice(0, 4)) log(`    → ${x}`);
             log(`  ${nome}: ${onde} · período ${como || 'não achei o filtro de datas'}${datas ? ` (${datas})` : ''}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ' (sem botão de filtrar seguro)'}`);
             const csv = await comissoesDaTela(page);
             if (!csv) {
@@ -1024,6 +1064,7 @@ async function main() {
             log(`  ${nome}: tabela da tela → comissoes · ${resumoCsv(csv)}`);
             resumo.relatorios[nome] = 'comissoes';
             porTipo.comissoes = { name: 'comissoes.csv', text: csv };
+            if (MODO === 'testar') diagnosticoComissoes(csv, porTipo.comandas?.text);
             continue;
           }
           await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' });
