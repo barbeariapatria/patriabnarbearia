@@ -9,6 +9,7 @@ const seed = require('./seed');
 const importer = require('./importer');
 const access = require('./access');
 const comissoes = require('./comissoes');
+const { normalize } = require('./team');
 
 // Prepara o banco uma vez por instância (em serverless, a cada "cold start")
 let ready;
@@ -208,6 +209,16 @@ app.put('/api/admin/comissoes/:id', auth.requireAdmin, wrap(async (req) => {
     linha.total_liquido = metrics.round2(linha.total_bruto + linha.bonus - linha.vales);
     lista.push(linha);
     await saveMonthly(q, y, m, 'comissoes', { ...(data || {}), lista, atualizado: new Date().toISOString() });
+    // bruto da assinatura conferido à mão (vazio = calculado pelo CashBarber); vale só para este mês
+    if ('assinatura_bruto' in req.body) {
+      const ajustes = (await getSetting('comissao_ajustes')) || {};
+      const chave = `${y}-${String(m).padStart(2, '0')}`;
+      const mes = { ...(ajustes[chave] || {}) };
+      for (const k of Object.keys(mes)) if (!/^\d+$/.test(k) && (normalize(k) === normalize(pro.name) || normalize(pro.name).split(' ')[0] === normalize(k))) delete mes[k];
+      const v = String(req.body.assinatura_bruto ?? '').trim();
+      if (v === '') delete mes[String(pid)]; else mes[String(pid)] = { ...(mes[String(pid)] || {}), assinatura_bruto: metrics.round2(Math.max(0, webhook.toNumber(v))) };
+      await q.run(`INSERT INTO settings(key, value) VALUES('comissao_ajustes', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, JSON.stringify({ ...ajustes, [chave]: mes }));
+    }
     await comissoes.sincronizar(y, m, q);
   });
   return { ok: true };

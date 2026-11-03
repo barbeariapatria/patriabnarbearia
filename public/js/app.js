@@ -1424,7 +1424,7 @@
           <thead><tr><th>Profissional</th>${COM_PARTES.map(([, l]) => `<th class="r">${l}</th>`).join('')}<th class="r">Bônus</th><th class="r">Vales</th><th class="r">A receber</th><th></th></tr></thead>
           <tbody>${d.lista.map((c) => `<tr>
             <td><span style="display:inline-flex;align-items:center;gap:10px"><span class="avatar" style="width:30px;height:30px;font-size:11px;background:${proColor(c.professional_id)};color:#fff;border:none">${esc(initials(c.nome))}</span><b>${esc(c.nome)}</b></span></td>
-            ${cel(c.partes.barbearia)}${cel(c.partes.extras)}${cel(c.partes.assinatura, ` · ${String(c.partes.assinatura.taxa).replace('.', ',')}%`)}${cel(c.partes.produtos)}
+            ${cel(c.partes.barbearia)}${cel(c.partes.extras)}${cel(c.partes.assinatura, ` · ${String(c.partes.assinatura.taxa).replace('.', ',')}%${c.partes.assinatura.bruto_ajustado ? ' · ajustado' : ''}`)}${cel(c.partes.produtos)}
             <td class="r num">${brl(c.bonus)}</td>
             <td class="r num">${c.vales ? `<span style="color:var(--bad, #e5484d)">- ${brl(c.vales)}</span>` : brl(0)}${c.vales_painel.length ? `<div class="muted" style="font-size:11.5px">${c.vales_painel.length} no painel</div>` : ''}</td>
             <td class="r num"><b style="color:var(--accent);font-size:15px">${brl(c.total_liquido)}</b></td>
@@ -1477,10 +1477,11 @@
         wide: true,
         title: `${escolha ? 'Lançar comissão' : esc(c.nome)} · ${d.mes_nome} ${d.ano}`,
         body: `<form id="comForm">${escolha ? `<div class="field"><label>Profissional</label><select class="input" name="pid">${semLinha.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>` : ''}
-          <p class="muted" style="font-size:12.5px;margin:0 0 12px">Valores de comissão como no CashBarber. O avulso é dividido entre Barbearia e Serviços extras pelo bruto de cada barbeiro, e a taxa de assinatura de cada um é aplicada em cima (botão Taxas).</p>
+          <p class="muted" style="font-size:12.5px;margin:0 0 12px">Valores de comissão como no CashBarber. O avulso é dividido entre Barbearia e Serviços extras pelo bruto de cada barbeiro. Com o bruto da assinatura preenchido, a comissão de assinatura passa a ser bruto × taxa do barbeiro (botão Taxas) e o robô não muda esse valor.</p>
           <div class="form-grid g3">
           ${field('avulso', 'Comissão de serviços avulsos (R$)', c ? v(c.partes.barbearia.comissao + c.partes.extras.comissao) : '')}
-          ${field('assinatura', `Comissão de assinatura no CashBarber (R$, a ${d.taxa_cashbarber}%)`, c ? v(c.partes.assinatura.recalculada ? (c.partes.assinatura.bruto * d.taxa_cashbarber) / 100 : c.partes.assinatura.comissao) : '')}
+          ${field('assinatura', `Comissão de assinatura no CashBarber (R$, a ${d.taxa_cashbarber}%)`, c ? v(c.partes.assinatura.comissao_cashbarber) : '')}
+          ${field('assinatura_bruto', 'Bruto da assinatura (R$) — vazio = calculado', c?.partes.assinatura.bruto_ajustado ? v(c.partes.assinatura.bruto) : '', c ? `calculado: ${v(c.partes.assinatura.comissao_cashbarber / (d.taxa_cashbarber / 100))}` : '0,00')}
           ${field('produtos', 'Comissão de produtos (R$)', c ? v(c.partes.produtos.comissao) : '')}
           ${field('bonus', 'Bônus (R$)', c ? v(c.bonus) : '')}
           ${field('vales_cashbarber', 'Vales do CashBarber (R$)', c ? v(c.vales_cashbarber) : '')}
@@ -1490,7 +1491,7 @@
           $('[data-save]', el).onclick = async () => {
             const body = Object.fromEntries(new FormData($('#comForm', el)));
             const id = escolha ? Number(body.pid) : pid;
-            for (const k of Object.keys(body)) if (k !== 'pid') body[k] = parseBR(body[k]);
+            for (const k of Object.keys(body)) if (k !== 'pid' && !(k === 'assinatura_bruto' && !String(body[k]).trim())) body[k] = parseBR(body[k]);
             body.ano = state.y; body.mes = state.m;
             try { await api(`/api/admin/comissoes/${id}`, { method: 'PUT', body }); toast('Comissão salva'); close(); route(); } catch (e) { toast(e.message, 'err'); }
           };

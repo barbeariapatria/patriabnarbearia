@@ -353,6 +353,8 @@ const DEFAULT_SETTINGS = {
   bar_profissionais: [],
   // Comissão: o CashBarber calcula a assinatura com taxa_cashbarber (%); quem tem outra taxa é recalculado no painel
   comissao_regras: { taxa_cashbarber: 40, assinatura: {}, assinatura_por_nome: { LUCAS: 35 } },
+  // Ajustes manuais por mês (AAAA-MM) e profissional (id, ou nome nos padrões): ex. bruto da assinatura conferido à mão
+  comissao_ajustes: { '2026-10': { LUCAS: { assinatura_bruto: 9027 } } },
   // Serviços que contam como "Barbearia" na comissão; o resto do avulso são os serviços extras
   servicos_barbearia: ['CABELO', 'BARBA', 'CABELO E BARBA', 'PEZINHO'],
 };

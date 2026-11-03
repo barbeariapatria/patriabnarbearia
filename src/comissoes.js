@@ -26,6 +26,8 @@ async function calcular(y, m, q = db) {
   ]);
   const regras = { taxa_cashbarber: 40, assinatura: {}, ...((await getSetting('comissao_regras')) || {}) };
   const taxaCb = Number(regras.taxa_cashbarber) || 40;
+  const ajustesMes = ((await getSetting('comissao_ajustes')) || {})[`${y}-${String(m).padStart(2, '0')}`] || {};
+  const ajusteDe = (pro) => ajustesMes[String(pro.id)] || Object.entries(ajustesMes).find(([k]) => !/^\d+$/.test(k) && (normalize(k) === normalize(pro.name) || normalize(pro.name).split(' ')[0] === normalize(k)))?.[1] || {};
   const pros = await q.all('SELECT id, name FROM professionals');
   const ids = new Set([...(com?.lista || []).map((x) => x.professional_id), ...(vales?.lista || []).map((x) => x.professional_id)]);
   const linhas = [];
@@ -39,7 +41,11 @@ async function calcular(y, m, q = db) {
     const fracBarbearia = bb + be > 0 ? bb / (bb + be) : 1;
     const taxa = taxaAssinatura(regras, pro);
     const assinaturaCb = Number(c.assinatura_liquido ?? c.assinatura_bruto) || 0;
-    const assinatura = taxa != null && taxa !== taxaCb ? round2((assinaturaCb * taxa) / taxaCb) : assinaturaCb;
+    const ajuste = ajusteDe(pro);
+    const brutoAjustado = ajuste.assinatura_bruto != null && ajuste.assinatura_bruto !== '' ? Number(ajuste.assinatura_bruto) : null;
+    // bruto da assinatura conferido à mão: a comissão passa a ser bruto × taxa do barbeiro
+    const assinatura = brutoAjustado != null ? round2((brutoAjustado * (taxa ?? taxaCb)) / 100)
+      : taxa != null && taxa !== taxaCb ? round2((assinaturaCb * taxa) / taxaCb) : assinaturaCb;
     const produtos = Number(c.produtos_liquido ?? c.produtos_bruto) || 0;
     const valesPainel = (vales?.lista || []).filter((v) => v.professional_id === pid);
     const valesCb = Number(c.vales) || 0;
@@ -49,7 +55,8 @@ async function calcular(y, m, q = db) {
       barbearia: { bruto: b.barbearia ?? null, comissao: round2(avulso * fracBarbearia) },
       extras: { bruto: b.extras ?? null, comissao: round2(avulso - round2(avulso * fracBarbearia)) },
       // bruto da assinatura: a parte do pote do barbeiro antes da taxa (comissão do CashBarber ÷ taxa)
-      assinatura: { bruto: assinaturaCb ? round2(assinaturaCb / (taxaCb / 100)) : 0, comissao: assinatura, taxa: taxa ?? taxaCb, recalculada: taxa != null && taxa !== taxaCb },
+      assinatura: { bruto: brutoAjustado ?? (assinaturaCb ? round2(assinaturaCb / (taxaCb / 100)) : 0), comissao: assinatura, taxa: taxa ?? taxaCb,
+        recalculada: brutoAjustado != null || (taxa != null && taxa !== taxaCb), bruto_ajustado: brutoAjustado != null, comissao_cashbarber: assinaturaCb },
       produtos: { bruto: b.produtos ?? null, comissao: produtos },
     };
     const comissao = round2(partes.barbearia.comissao + partes.extras.comissao + partes.assinatura.comissao + partes.produtos.comissao);
