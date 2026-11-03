@@ -3,7 +3,7 @@
 const { db } = require('./db');
 
 // Telas que podem ser liberadas (as de administração são só para administradores)
-const PAGES = ['meu-painel', 'inicio', 'visao-geral', 'faturamento', 'profissionais'];
+const PAGES = ['meu-painel', 'inicio', 'visao-geral', 'faturamento', 'profissionais', 'comissoes'];
 // Telas com números da barbearia inteira (faturamento, metas, assinaturas)
 const SHOP_PAGES = ['inicio', 'visao-geral', 'faturamento'];
 const DEFAULT_BARBER = { ativo: true, telas: ['meu-painel'], escopo: 'proprio', professional_id: null };

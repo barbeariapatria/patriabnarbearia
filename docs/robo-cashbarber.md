@@ -88,3 +88,12 @@ do cliente, na comanda do barbeiro ou numa comanda só de consumo. O painel sepa
   com uma linha por item vendido e o profissional (colunas: `Profissional`, `Item`/`Produto`, `Valor`, opcional `Data`).
   Sem ele, a importação avisa quanto bar ainda está "sem atribuição" nas comandas dos barbeiros.
 - [ ] Encontrar no CashBarber o relatório de itens/vendas por profissional e incluir na exportação diária.
+
+## Comissões (Gestão → Gerar comissões)
+
+O robô abre **Gestão → Gerar comissões** pelo menu lateral, escolhe o mês e clica só em **Filtrar/Buscar** — nunca em
+"Gerar comissões", "Salvar", "Confirmar" ou "Pagar" (esses gravariam o fechamento no CashBarber). Ele lê a tabela da
+tela (serviços avulsos, serviços de assinatura e produtos com valor bruto e líquido, bônus, vales, total bruto e total
+líquido) e envia ao painel como `comissoes`. O total líquido vira a comissão do mês de cada profissional, e a aba
+**Comissões** do painel mostra tudo e gera um PDF por barbeiro. Se o log mostrar "sem botão de filtrar seguro" ou
+"colunas não reconhecidas", mande o log: ele traz só os nomes dos botões e das colunas.

@@ -7,6 +7,16 @@
       "periodo": true
     },
     {
+      "menu": [
+        "Gestão",
+        "Gerar comissões"
+      ],
+      "nome": "Comissões",
+      "periodo": true,
+      "comissoes": true,
+      "_leia": "Fora de /relatorio: abre pelo menu lateral. Só clica em Filtrar/Buscar (nunca em Gerar comissões, Salvar ou Confirmar, que gravariam o fechamento) e lê a tabela da tela."
+    },
+    {
       "url": "/relatorio/relatorio15",
       "nome": "Vendas",
       "periodo": true

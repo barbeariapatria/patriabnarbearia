@@ -46,6 +46,8 @@ const brDate = (v) => { const m = String(v || '').match(/(\d{2})\/(\d{2})\/(\d{4
 function detect(rows) {
   const k = Object.keys(rows[0] || {});
   if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
+  // Gestão → Gerar comissões: o que cada profissional recebe no período
+  if (k.includes('PROFISSIONAL') && k.includes('TOTAL LIQUIDO')) return 'comissoes';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
@@ -122,8 +124,8 @@ async function analyze(files, escolhido = {}) {
     const [dy, dm] = months[0].split('-').map(Number);
     throw new Error(`Os arquivos são de ${MONTHS[dm - 1]}/${dy}, mas o mês escolhido é ${MONTHS[em - 1]}/${ey}. Escolha ${MONTHS[dm - 1]}/${dy} ou envie os arquivos do mês certo.`);
   }
-  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens'].some((k) => reports[k]);
-  if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Vendas, Assinantes e Cancelamentos não trazem datas.');
+  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens', 'comissoes'].some((k) => reports[k]);
+  if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Vendas, Assinantes, Cancelamentos e Comissões não trazem datas.');
   const [y, m] = months.length ? months[0].split('-').map(Number) : (needsMonth || reports.equipe ? [ey, em] : [null, null]);
   if (y && m) periodos.mes = { de: iso(y, m, 1), ate: iso(y, m, daysInMonth(y, m)), texto: `${MONTHS[m - 1]}/${y}` };
 
@@ -379,7 +381,23 @@ async function analyze(files, escolhido = {}) {
   }
   if (agendamentos.length) unidade.atendimentos_clube = agendamentos.filter((a) => a.clube && a.status === 'FINALIZADO').length;
 
+  // ---- comissões (Gestão → Gerar comissões): bruto e líquido de cada parte, bônus, vales e o total a receber
+  let comissoes = null;
+  if (reports.comissoes) {
+    const v = (r, k) => money(r[k]);
+    const lista = reports.comissoes.filter((r) => r.PROFISSIONAL && !/^TOTA(L|IS)$/.test(normalize(r.PROFISSIONAL))).map((r) => ({
+      nome_cashbarber: r.PROFISSIONAL, ...resolve(r.PROFISSIONAL),
+      avulso_bruto: v(r, 'SERVICOS AVULSO BRUTO'), avulso_liquido: v(r, 'SERVICOS AVULSO LIQUIDO'),
+      assinatura_bruto: v(r, 'SERVICOS ASSINATURA BRUTO'), assinatura_liquido: v(r, 'SERVICOS ASSINATURA LIQUIDO'),
+      produtos_bruto: v(r, 'PRODUTOS BRUTO'), produtos_liquido: v(r, 'PRODUTOS LIQUIDO'),
+      bonus: v(r, 'BONUS'), vales: v(r, 'VALES'), total_bruto: v(r, 'TOTAL BRUTO'), total_liquido: v(r, 'TOTAL LIQUIDO'),
+    }));
+    const soma = (k) => round2(lista.reduce((t, x) => t + x[k], 0));
+    comissoes = { lista, total_bruto: soma('total_bruto'), total_liquido: soma('total_liquido'), vales: soma('vales'), bonus: soma('bonus') };
+  }
+
   return {
+    comissoes,
     unidade: Object.keys(unidade).length ? unidade : null,
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
     mes_detectado: months.length > 0, periodos,
@@ -478,6 +496,18 @@ async function apply(plan) {
       await saveReport(q, y, m, 'bar', { ...resto, por_profissional: (por_profissional || []).map(({ nome, valor }) => ({ nome, valor })) });
     }
     if (plan.produtos && y && m) await saveReport(q, y, m, 'produtos', plan.produtos);
+    // comissões: o total líquido vira a comissão do mês de cada profissional
+    if (plan.comissoes && y && m) {
+      const lista = [];
+      for (const c of plan.comissoes.lista) {
+        const { nome_cashbarber, existente, id, ...valores } = c;
+        const pid = await ensurePro(c);
+        await q.run('INSERT INTO professional_monthly(professional_id, year, month) VALUES(?, ?, ?) ON CONFLICT DO NOTHING', pid, y, m);
+        await q.run('UPDATE professional_monthly SET comissao = ?, updated_at = CURRENT_TIMESTAMP WHERE professional_id = ? AND year = ? AND month = ?', c.total_liquido, pid, y, m);
+        lista.push({ professional_id: pid, ...valores });
+      }
+      await saveReport(q, y, m, 'comissoes', { ...plan.comissoes, lista, atualizado: new Date().toISOString() });
+    }
 
     if (plan.agenda) {
       const profissionais = [];

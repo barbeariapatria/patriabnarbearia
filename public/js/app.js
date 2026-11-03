@@ -281,6 +281,7 @@
     { path: 'visao-geral', label: 'Painel de metas', icon: 'trend', title: 'Painel de metas', month: true, period: true },
     { path: 'faturamento', label: 'Faturamento diário', icon: 'calendar', title: 'Faturamento por dia', month: true, period: true },
     { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true, period: true },
+    { path: 'comissoes', label: 'Comissões', icon: 'cash', title: 'Comissões', month: true },
     { group: 'Administração', admin: true },
     { path: 'admin/importar', label: 'Importar CashBarber', icon: 'download', title: 'Importar relatórios do CashBarber', admin: true },
     { path: 'admin/dados', label: 'Dados do mês', icon: 'db', title: 'Dados do mês', month: true, admin: true },
@@ -1317,6 +1318,151 @@
     $('#demoClr').onclick = async () => { if (!(await confirmDialog('Remover todos os dias marcados como DEMO?', { ok: 'Remover' }))) return; await api('/api/admin/demo', { method: 'DELETE' }); toast('Dados demo removidos'); };
   }
 
+  // ============================================================ Comissões
+  // Vem do CashBarber (Gestão → Gerar comissões) pelo robô, todo dia; o administrador também pode editar.
+  const COM_PARTES = [
+    ['avulso', 'Serviços avulsos'], ['assinatura', 'Serviços de assinatura'], ['produtos', 'Produtos'],
+  ];
+  // jsPDF só é carregado quando alguém pede um PDF
+  let pdfLib = null;
+  function loadScript(src) {
+    return new Promise((ok, fail) => { const t = document.createElement('script'); t.src = src; t.onload = ok; t.onerror = () => fail(new Error(`Não carregou ${src}`)); document.head.appendChild(t); });
+  }
+  async function getPdf() {
+    if (!pdfLib) {
+      pdfLib = (async () => {
+        await loadScript('/vendor/jspdf.umd.min.js');
+        await loadScript('/vendor/jspdf.plugin.autotable.min.js');
+        const logo = await fetch('/img/patria-logo.png').then((r) => r.blob()).then((b) => new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(b); })).catch(() => null);
+        const dims = logo ? await new Promise((ok) => { const i = new Image(); i.onload = () => ok({ w: i.naturalWidth, h: i.naturalHeight }); i.onerror = () => ok(null); i.src = logo; }) : null;
+        return { jsPDF: window.jspdf.jsPDF, logo, dims };
+      })().catch((e) => { pdfLib = null; throw e; });
+    }
+    return pdfLib;
+  }
+  const fileSafe = (t) => String(t).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+  async function comissaoPdf(c, info) {
+    const { jsPDF, logo, dims } = await getPdf();
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const W = doc.internal.pageSize.getWidth();
+    const gold = [201, 162, 39]; const ink = [20, 20, 20]; const soft = [110, 110, 110];
+    // cabeçalho preto com o logo
+    doc.setFillColor(12, 12, 12); doc.rect(0, 0, W, 42, 'F');
+    if (logo && dims) { const h = 24; const w = (dims.w / dims.h) * h; doc.addImage(logo, 'PNG', 14, 9, Math.min(w, 70), h * (Math.min(w, 70) / w)); }
+    doc.setTextColor(...gold); doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+    doc.text('DEMONSTRATIVO DE COMISSÃO', W - 14, 19, { align: 'right' });
+    doc.setTextColor(220, 220, 220); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    doc.text(`${info.mes_nome} de ${info.ano}`, W - 14, 26, { align: 'right' });
+    // profissional e valor a receber
+    doc.setTextColor(...soft); doc.setFontSize(9); doc.text('PROFISSIONAL', 14, 56);
+    doc.setTextColor(...ink); doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.text(c.nome, 14, 64);
+    doc.setDrawColor(...gold); doc.setLineWidth(0.6); doc.roundedRect(W - 84, 49, 70, 22, 2, 2, 'S');
+    doc.setTextColor(...soft); doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.text('TOTAL A RECEBER', W - 49, 56, { align: 'center' });
+    doc.setTextColor(...ink); doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.text(brl(c.total_liquido), W - 49, 66, { align: 'center' });
+    // detalhamento
+    const body = COM_PARTES.map(([k, l]) => [l, brl(c[`${k}_bruto`]), brl(c[`${k}_liquido`])]);
+    doc.autoTable({
+      startY: 80, head: [['Descrição', 'Valor bruto', 'Valor líquido']], body,
+      foot: [['Total', brl(c.total_bruto), brl(Math.round(COM_PARTES.reduce((a, [k]) => a + (Number(c[`${k}_liquido`]) || 0), 0) * 100) / 100)]],
+      theme: 'grid', styles: { font: 'helvetica', fontSize: 10, cellPadding: 3.2, textColor: ink, lineColor: [225, 225, 225] },
+      headStyles: { fillColor: [12, 12, 12], textColor: gold, fontStyle: 'bold' }, footStyles: { fillColor: [245, 240, 225], textColor: ink, fontStyle: 'bold' },
+      columnStyles: { 1: { halign: 'right' }, 2: { halign: 'right' } }, margin: { left: 14, right: 14 },
+    });
+    let y = doc.lastAutoTable.finalY + 8;
+    doc.autoTable({
+      startY: y, head: [['Ajustes', 'Valor']],
+      body: [['Bônus', `+ ${brl(c.bonus)}`], ['Vales / adiantamentos', `- ${brl(c.vales)}`]],
+      foot: [['Total líquido a receber', brl(c.total_liquido)]],
+      theme: 'grid', styles: { font: 'helvetica', fontSize: 10, cellPadding: 3.2, textColor: ink, lineColor: [225, 225, 225] },
+      headStyles: { fillColor: [12, 12, 12], textColor: gold, fontStyle: 'bold' }, footStyles: { fillColor: gold, textColor: [12, 12, 12], fontStyle: 'bold', fontSize: 11 },
+      columnStyles: { 1: { halign: 'right' } }, margin: { left: 14, right: 14 },
+    });
+    y = doc.lastAutoTable.finalY + 10;
+    doc.setTextColor(...soft); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+    doc.text(doc.splitTextToSize('Valores do CashBarber (Gestão > Gerar comissões) no período. Itens do bar não entram na comissão.', W - 28), 14, y);
+    // assinaturas
+    const yA = Math.max(y + 30, 240);
+    doc.setDrawColor(150, 150, 150); doc.setLineWidth(0.3);
+    doc.line(14, yA, 92, yA); doc.line(W - 92, yA, W - 14, yA);
+    doc.setFontSize(9); doc.text(c.nome, 53, yA + 5, { align: 'center' }); doc.text('Pátria Barbearia', W - 53, yA + 5, { align: 'center' });
+    doc.setFontSize(8); doc.text(`Gerado em ${new Date().toLocaleString('pt-BR')}${info.atualizado_em ? ` · dados de ${new Date(info.atualizado_em).toLocaleString('pt-BR')}` : ''}`, W / 2, 287, { align: 'center' });
+    doc.save(`comissao-${fileSafe(c.nome)}-${info.ano}-${String(info.mes).padStart(2, '0')}.pdf`);
+  }
+
+  async function viewComissoes(view) {
+    const d = await api(`/api/comissoes?ano=${state.y}&mes=${state.m}`);
+    $('#pageSub').textContent = d.restrito ? `Sua comissão em ${d.mes_nome} ${d.ano}` : `O que cada profissional recebe em ${d.mes_nome} ${d.ano} · atualizado pelo robô todo dia às 20h`;
+    const T = d.total;
+    const parte = (c, k) => `<td class="r num">${brl(c[`${k}_bruto`])}${Math.abs((c[`${k}_bruto`] || 0) - (c[`${k}_liquido`] || 0)) > 0.004 ? `<div class="muted" style="font-size:11.5px">líq. ${brl(c[`${k}_liquido`])}</div>` : ''}</td>`;
+    const admin = isAdmin();
+    const semLinha = admin ? state.pros.filter((p) => p.active && !d.lista.some((c) => c.professional_id === p.id)) : [];
+    view.innerHTML = `
+      <div class="grid g-auto">
+        ${kpi({ label: d.restrito ? 'A receber' : 'Total a pagar', value: brl(T.total_liquido), foot: `Bruto ${brl(T.total_bruto)}`, ic: 'cash' })}
+        ${kpi({ label: 'Serviços avulsos', value: brl(T.avulso_liquido), foot: `Bruto ${brl(T.avulso_bruto)}`, ic: 'scissors' })}
+        ${kpi({ label: 'Serviços de assinatura', value: brl(T.assinatura_liquido), foot: `Bruto ${brl(T.assinatura_bruto)}`, ic: 'star' })}
+        ${kpi({ label: 'Bônus e vales', value: brl(T.bonus - T.vales), foot: `Bônus ${brl(T.bonus)} · Vales ${brl(T.vales)}`, ic: 'ticket' })}
+      </div>
+      <div class="card fade-in" style="margin-top:18px">
+        <div class="card-h"><h3>${d.restrito ? 'Minha comissão' : 'Comissão por profissional'}</h3><div class="grow"></div>
+          ${d.lista.length > 1 ? `<button class="btn btn-sm" id="pdfAll">${icon('download')} PDF de todos</button>` : ''}
+          ${admin && semLinha.length ? `<button class="btn btn-sm" id="addCom">${icon('plus')} Lançar</button>` : ''}</div>
+        ${d.lista.length ? `<div class="table-wrap"><table class="t">
+          <thead><tr><th>Profissional</th><th class="r">Serv. avulsos</th><th class="r">Serv. assinatura</th><th class="r">Produtos</th><th class="r">Bônus</th><th class="r">Vales</th><th class="r">Total bruto</th><th class="r">A receber</th><th></th></tr></thead>
+          <tbody>${d.lista.map((c) => `<tr>
+            <td><span style="display:inline-flex;align-items:center;gap:10px"><span class="avatar" style="width:30px;height:30px;font-size:11px;background:${proColor(c.professional_id)};color:#fff;border:none">${esc(initials(c.nome))}</span><b>${esc(c.nome)}</b></span></td>
+            ${parte(c, 'avulso')}${parte(c, 'assinatura')}${parte(c, 'produtos')}
+            <td class="r num">${brl(c.bonus)}</td><td class="r num">${c.vales ? `- ${brl(c.vales)}` : brl(0)}</td><td class="r num">${brl(c.total_bruto)}</td>
+            <td class="r num"><b style="color:var(--accent)">${brl(c.total_liquido)}</b></td>
+            <td class="r" style="white-space:nowrap"><button class="btn btn-sm" data-pdf="${c.professional_id}">${icon('download')} PDF</button>${admin ? ` <button class="btn btn-sm" data-edit="${c.professional_id}" title="Editar">${icon('edit')}</button>` : ''}</td></tr>`).join('')}</tbody>
+          ${d.lista.length > 1 ? `<tfoot><tr><td><b>Total</b></td><td class="r num"><b>${brl(T.avulso_bruto)}</b></td><td class="r num"><b>${brl(T.assinatura_bruto)}</b></td><td class="r num"><b>${brl(T.produtos_bruto)}</b></td><td class="r num"><b>${brl(T.bonus)}</b></td><td class="r num"><b>${T.vales ? `- ${brl(T.vales)}` : brl(0)}</b></td><td class="r num"><b>${brl(T.total_bruto)}</b></td><td class="r num"><b>${brl(T.total_liquido)}</b></td><td></td></tr></tfoot>` : ''}
+        </table></div>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">Valores de Gestão → Gerar comissões do CashBarber${d.atualizado_em ? ` · atualizado em ${new Date(d.atualizado_em).toLocaleString('pt-BR')}` : ''}. "A receber" = total líquido (com bônus e descontando vales).</p>`
+        : emptyState(`Sem comissões em ${d.mes_nome}`, d.restrito ? 'A comissão do mês ainda não foi lançada.' : 'O robô traz a tela Gerar comissões do CashBarber todo dia às 20h. Você também pode lançar à mão.', admin && semLinha.length ? `<button class="btn btn-primary" id="addCom2">Lançar comissão</button>` : '')}
+      </div>`;
+    const gerar = async (lista, b) => {
+      const txt = b?.innerHTML; if (b) { b.disabled = true; b.innerHTML = `${icon('refresh')} Gerando…`; }
+      try { for (const c of lista) { await comissaoPdf(c, d); if (lista.length > 1) await new Promise((r) => setTimeout(r, 600)); } toast(lista.length > 1 ? `${lista.length} PDFs gerados` : 'PDF gerado'); } catch (e) { toast(e.message, 'err'); } finally { if (b) { b.disabled = false; b.innerHTML = txt; } }
+    };
+    $$('[data-pdf]', view).forEach((b) => b.addEventListener('click', () => gerar([d.lista.find((c) => c.professional_id === Number(b.dataset.pdf))], b)));
+    $('#pdfAll', view)?.addEventListener('click', (e) => gerar(d.lista, e.currentTarget));
+    if (!admin) return;
+    const editar = (pid) => {
+      const c = d.lista.find((x) => x.professional_id === pid) || {};
+      const f = (k, label) => `<div class="field"><label>${label}</label><input class="input num" name="${k}" value="${num2(c[k])}" inputmode="decimal" placeholder="0,00"></div>`;
+      const escolha = !pid;
+      modal({
+        wide: true,
+        title: `${escolha ? 'Lançar comissão' : esc(c.nome)} · ${d.mes_nome} ${d.ano}`,
+        body: `<form id="comForm">${escolha ? `<div class="field"><label>Profissional</label><select class="input" name="pid">${semLinha.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>` : ''}
+          <div class="form-grid g3">
+          ${COM_PARTES.map(([k, l]) => `${f(`${k}_bruto`, `${l} · bruto (R$)`)}${f(`${k}_liquido`, `${l} · líquido (R$)`)}`).join('')}
+          ${f('bonus', 'Bônus (R$)')}${f('vales', 'Vales (R$)')}${f('total_bruto', 'Total bruto (R$) — vazio = soma')}${f('total_liquido', 'A receber (R$) — vazio = líquidos + bônus − vales')}
+        </div></form>`,
+        footer: `${!escolha ? `<button class="btn btn-danger" data-del style="margin-right:auto">${icon('trash')} Apagar</button>` : ''}<button class="btn" data-close>Cancelar</button><button class="btn btn-primary" data-save>${icon('check')} Salvar</button>`,
+        onMount: (el, close) => {
+          $('[data-save]', el).onclick = async () => {
+            const body = Object.fromEntries(new FormData($('#comForm', el)));
+            const id = escolha ? Number(body.pid) : pid;
+            for (const k of Object.keys(body)) if (k !== 'pid') body[k] = parseBR(body[k]);
+            if (!String($('[name="total_bruto"]', el).value).trim()) body.total_bruto = COM_PARTES.reduce((a, [k]) => a + body[`${k}_bruto`], 0);
+            if (!String($('[name="total_liquido"]', el).value).trim()) body.total_liquido = COM_PARTES.reduce((a, [k]) => a + body[`${k}_liquido`], 0) + body.bonus - body.vales;
+            body.ano = state.y; body.mes = state.m;
+            try { await api(`/api/admin/comissoes/${id}`, { method: 'PUT', body }); toast('Comissão salva'); close(); route(); } catch (e) { toast(e.message, 'err'); }
+          };
+          $('[data-del]', el)?.addEventListener('click', async () => {
+            if (!(await confirmDialog(`Apagar a comissão de ${esc(c.nome)} em ${d.mes_nome}?`, { ok: 'Apagar' }))) return;
+            await api(`/api/admin/comissoes/${pid}?ano=${state.y}&mes=${state.m}`, { method: 'DELETE' });
+            toast('Comissão apagada'); close(); route();
+          });
+        },
+      });
+    };
+    $$('[data-edit]', view).forEach((b) => b.addEventListener('click', () => editar(Number(b.dataset.edit))));
+    $('#addCom', view)?.addEventListener('click', () => editar(null));
+    $('#addCom2', view)?.addEventListener('click', () => editar(null));
+  }
+
   // ============================================================ Admin · Usuários
   // Telas que o dono pode liberar para cada login
   const PERM_PAGES = [
@@ -1325,6 +1471,7 @@
     ['visao-geral', 'Painel de metas', 'Metas, quinzenas, agenda e clube'],
     ['faturamento', 'Faturamento diário', 'Faturamento de cada dia'],
     ['profissionais', 'Profissionais', 'Ranking e comparativo'],
+    ['comissoes', 'Comissões', 'Quanto recebe no mês e o PDF (com "só os próprios números", vê só a dele)'],
   ];
 
   async function viewAdminUsers(view) {
@@ -1862,6 +2009,7 @@
     'visao-geral': viewOverview,
     faturamento: viewDaily,
     profissionais: viewPros,
+    comissoes: viewComissoes,
     'admin/lancamentos': viewAdminLanc,
     'admin/equipe': viewAdminTeam,
     'admin/metas': viewAdminConfig,

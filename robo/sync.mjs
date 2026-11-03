@@ -662,6 +662,81 @@ async function tabelaDaTela(page) {
   return [primeira.cab, ...linhas].map((r) => r.map(q).join(';')).join('\n');
 }
 
+// ---------------------------------------------------------------- comissões (Gestão → Gerar comissões)
+// Abre uma tela pelo menu lateral (para telas fora de /relatorio, cujo endereço pode mudar)
+async function abrirPeloMenu(page, caminho) {
+  await page.goto(BASE + '/dashboard-operacional', { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  const ultimo = caminho[caminho.length - 1];
+  const link = () => page.locator('a, [role="menuitem"], li, span').filter({ hasText: new RegExp(`^\\s*${ultimo}\\s*$`, 'i') });
+  for (const grupo of [null, ...caminho.slice(0, -1)]) {
+    if (grupo) {
+      const g = page.locator('a:visible, button:visible, [role="button"]:visible, li:visible > span, span:visible').filter({ hasText: new RegExp(`^\\s*${grupo}\\s*$`, 'i') }).first();
+      if (await g.count()) { await g.click({ timeout: 5000 }).catch(() => {}); await page.waitForTimeout(800); }
+    }
+    const href = await page.locator('a').filter({ hasText: new RegExp(`^\\s*${ultimo}\\s*$`, 'i') }).first().getAttribute('href', { timeout: 2000 }).catch(() => null);
+    if (href && !/^(#|javascript:)/i.test(href)) {
+      await page.goto(new URL(href, BASE).href, { waitUntil: 'domcontentloaded' });
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      return new URL(page.url()).pathname;
+    }
+    const v = link().filter({ visible: true }).first();
+    if (await v.count()) {
+      await v.click({ timeout: 5000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      return new URL(page.url()).pathname;
+    }
+  }
+  return null;
+}
+// Botões que só mostram a prévia. "Gerar comissões", "Salvar", "Confirmar" ou "Pagar" gravariam o fechamento: nunca são clicados.
+const RE_FILTRO_SEGURO = /^\s*(filtrar|buscar|pesquisar|consultar|visualizar|calcular|aplicar)\s*$/i;
+async function filtrarComissoes(page) {
+  const b = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible').filter({ hasText: RE_FILTRO_SEGURO }).first();
+  if (!(await b.count())) return false;
+  await b.click({ timeout: 5000 }).catch(() => {});
+  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2500);
+  return true;
+}
+// A tabela traz em cada célula "Valor bruto: R$ … / Data de venc: … / Valor líquido: R$ …": vira colunas BRUTO e LIQUIDO
+const COLUNAS_COMISSAO = [
+  [/avuls/i, 'SERVICOS AVULSO'], [/assinat/i, 'SERVICOS ASSINATURA'], [/produt/i, 'PRODUTOS'], [/b[oô]nus/i, 'BONUS'], [/vale/i, 'VALES'],
+  [/total.*bruto/i, 'TOTAL BRUTO'], [/total.*l[ií]q/i, 'TOTAL LIQUIDO'], [/profiss|colaborador|barbeiro|^nome$/i, 'PROFISSIONAL'],
+];
+async function comissoesDaTela(page) {
+  const t = await page.evaluate(() => {
+    const tabs = [...document.querySelectorAll('table')].map((t) => ({ t, n: t.querySelectorAll('tbody tr').length })).sort((a, b) => b.n - a.n);
+    if (!tabs.length) return null;
+    const tb = tabs[0].t;
+    const cab = [...(tb.querySelector('thead tr:last-child') || tb.querySelector('tr')).querySelectorAll('th, td')].map((c) => c.innerText.trim());
+    const linhas = [...tb.querySelectorAll('tbody tr')].map((tr) => [...tr.querySelectorAll('td')].map((c) => c.innerText.trim())).filter((r) => r.length === cab.length);
+    const m = document.body.innerText.match(/(?:mostrando|exibindo|showing)[^\n]{0,40}?\d+\s*(?:a|até|-|to)\s*\d+\s*(?:de|of)\s*([\d.]+)/i);
+    return { cab, linhas, total: m ? Number(m[1].replace(/\./g, '')) : null };
+  });
+  if (!t || !t.linhas.length) return null;
+  const mapa = t.cab.map((h) => COLUNAS_COMISSAO.find(([re]) => re.test(h))?.[1] || null);
+  if (!mapa.includes('PROFISSIONAL') || !mapa.includes('TOTAL LIQUIDO')) { log(`    comissões: colunas da tela ${t.cab.join(' | ')} — não reconhecidas`); return null; }
+  if (t.total && t.linhas.length < t.total) { log(`    comissões: li ${t.linhas.length} de ${t.total} linhas — incompleta, não vou usar`); return null; }
+  const valor = (txt, re) => { const m = String(txt).match(re); return m ? m[1].trim() : ''; };
+  const cab = []; const idx = [];
+  mapa.forEach((nome, i) => {
+    if (!nome) return;
+    const ex = t.linhas.find((r) => /bruto/i.test(r[i]));
+    if (ex && /l[ií]quido/i.test(ex)) { cab.push(`${nome} BRUTO`, `${nome} LIQUIDO`); idx.push([i, 'bruto'], [i, 'liquido']); } else { cab.push(nome); idx.push([i, 'simples']); }
+  });
+  const linhas = t.linhas.map((r) => idx.map(([i, tipo]) => {
+    const c = r[i] || '';
+    if (tipo === 'bruto') return valor(c, /valor\s*bruto:?\s*(R?\$?\s*-?[\d.,]+)/i);
+    if (tipo === 'liquido') return valor(c, /valor\s*l[ií]quido:?\s*(R?\$?\s*-?[\d.,]+)/i);
+    if (mapa[i] === 'PROFISSIONAL') return c.split('\n').map((x) => x.trim()).find(Boolean) || '';
+    return valor(c, /(R?\$?\s*-?[\d.]*\d,\d{2})/) || c;
+  }));
+  const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  return [cab, ...linhas].map((r) => r.map(q).join(';')).join('\n');
+}
+
 // ---------------------------------------------------------------- respostas JSON dos relatórios
 // O CashBarber monta a tabela a partir da resposta de /api/painel/relatorios/N. Ela traz TODAS as linhas
 // do período (a tela mostra só 10 por página), então serve de fonte quando o botão de exportar não baixa nada.
@@ -781,6 +856,7 @@ function tipoDoCsv(csv) {
   const k = linha.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/)
     .map((c) => c.replace(/"/g, '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[.\-_]/g, ' ').replace(/\s+/g, ' ').trim());
   if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
+  if (k.includes('PROFISSIONAL') && k.includes('TOTAL LIQUIDO')) return 'comissoes';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
@@ -895,6 +971,26 @@ async function main() {
       for (const pg of PAGINAS) {
         const nome = pg.nome || pg.url;
         try {
+          if (pg.comissoes) {
+            const onde = (pg.url && (await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' }).then((r) => r && r.ok()).catch(() => false)) && new URL(page.url()).pathname) || await abrirPeloMenu(page, pg.menu);
+            if (!onde) throw new Error(`não achei ${pg.menu.join(' → ')} no menu do CashBarber`);
+            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+            const como = await definirPeriodo(page, per);
+            const filial = await escolherFilial(page);
+            const datas = await conferirDatas(page, per);
+            const filtrou = await filtrarComissoes(page);
+            log(`  ${nome}: ${onde} · período ${como || 'não achei o filtro de datas'}${datas ? ` (${datas})` : ''}${filial.length ? ` + ${filial.join(', ')}` : ''}${filtrou ? ' + Filtrar' : ' (sem botão de filtrar seguro)'}`);
+            const csv = await comissoesDaTela(page);
+            if (!csv) {
+              const lista = (await clicaveis(page)).map((x) => `[${x.desc}]`).slice(0, 25);
+              throw new Error(`não consegui ler a tabela de comissões · botões: ${lista.join(' ') || '(nenhum)'}`);
+            }
+            if (!como) throw new Error('não consegui escolher o período; a tabela não foi usada');
+            log(`  ${nome}: tabela da tela → comissoes · ${resumoCsv(csv)}`);
+            resumo.relatorios[nome] = 'comissoes';
+            porTipo.comissoes = { name: 'comissoes.csv', text: csv };
+            continue;
+          }
           await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' });
           await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
           let ex = null;
@@ -964,7 +1060,7 @@ async function main() {
       if (!FILIAL_ID) log('  Código da filial Village não apareceu nas respostas do CashBarber (relatórios que pedem filial podem falhar).');
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
       // envia o que conseguiu; o que faltou fica relatado (cada relatório só substitui a sua parte no painel)
-      const faltam = ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe'].filter((t) => !porTipo[t]);
+      const faltam = ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe', ...(PAGINAS.some((p) => p.comissoes) ? ['comissoes'] : [])].filter((t) => !porTipo[t]);
       if (faltam.length) log(`  Não veio desta vez: ${faltam.join(', ')} — essas partes do painel ficam como estavam.`);
       resumo.faltaram = faltam;
       if (!tipos.length) {

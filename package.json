@@ -17,6 +17,8 @@
     "@libsql/client": "0.17.3",
     "chart.js": "4.4.7",
     "express": "4.21.2",
+    "jspdf": "2.5.2",
+    "jspdf-autotable": "3.8.4",
     "pg": "^8.13.1"
   },
   "devDependencies": {
