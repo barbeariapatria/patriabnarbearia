@@ -715,7 +715,16 @@ async function filtrarComissoes(page) {
   if (!(await b.count())) return false;
   await b.click({ timeout: 5000 }).catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(2500);
+  // o cálculo demora: o botão fica girando (fa-spin, desativado) até a tabela sair; espera até 3 min
+  for (let t = 0; t < 180; t++) {
+    const carregando = await page.evaluate(() => !![...document.querySelectorAll('button .fa-spin, button:disabled .fa-sync, .spinner-border, .kt-spinner, .blockUI, .loading')]
+      .find((e) => e.offsetWidth || e.offsetHeight || e.getClientRects().length)).catch(() => false);
+    const linhas = await page.locator('table tbody tr').count().catch(() => 0);
+    if (!carregando && (linhas || t >= 10)) break;
+    if (t && t % 30 === 0) log(`    comissões: ainda calculando (${t}s)`);
+    await page.waitForTimeout(1000);
+  }
+  await page.waitForTimeout(1500);
   return true;
 }
 // A tabela traz em cada célula "Valor bruto: R$ … / Data de venc: … / Valor líquido: R$ …": vira colunas BRUTO e LIQUIDO
@@ -761,6 +770,11 @@ async function comissoesDaTela(page) {
 const RESP_REL = [];
 async function guardarRelatorio(resp) {
   try {
+    if (/comiss/i.test(new URL(resp.url()).pathname) && /json/i.test(resp.headers()['content-type'] || '')) {
+      const j = await resp.json().catch(() => null);
+      const l = j && maiorLista(j);
+      log(`    resposta ${new URL(resp.url()).pathname} (${resp.status()}): ${l ? `${l.length} linhas · campos: ${camposDoJson(l)}` : `campos: ${j && typeof j === 'object' ? Object.keys(j).slice(0, 20).join(', ') : '-'}`}`);
+    }
     if (!/\/api\/painel\/relatorios\//.test(resp.url()) || resp.status() !== 200) return;
     if (!/json/i.test(resp.headers()['content-type'] || '')) return;
     const texto = await resp.text();
