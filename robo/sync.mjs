@@ -96,6 +96,7 @@ async function entrar(page) {
   await page.waitForFunction(() => ![...document.querySelectorAll('input[type="password"]')]
     .some((e) => e.offsetWidth || e.offsetHeight), null, { timeout: 25000 }).catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  await fecharPropaganda(page);
   const aindaNoLogin = await page.locator('input[type="password"]:visible').count();
   const texto = norm(await page.locator('body').innerText().catch(() => ''));
   if (aindaNoLogin) {
@@ -245,6 +246,21 @@ async function definirPeriodo(page, per) {
 }
 
 // lê e fecha o aviso do CashBarber (SweetAlert), se houver; devolve o texto (e-mails mascarados)
+// Avisos de propaganda/novidade do CashBarber que cobrem a tela (ex.: "Quero me Inscrever" / "Entendi"):
+// fecha pelo botão de dispensar, nunca pelo de aceitar
+// (só "Entendi"/"Agora não": "Fechar" ou "×" poderiam fechar a janela do próprio filtro)
+const RE_DISPENSAR = /^\s*(entendi|ok,? entendi|agora n[aã]o|n[aã]o,? obrigad[oa])\s*$/i;
+async function fecharPropaganda(page) {
+  let fechou = 0;
+  for (let t = 0; t < 3; t++) {
+    const b = page.locator('.ga-actions__secondary:visible').or(page.locator('button:visible, a:visible').filter({ hasText: RE_DISPENSAR })).first();
+    if (!(await b.count())) break;
+    await b.click({ timeout: 3000 }).catch(() => {});
+    fechou++;
+    await page.waitForTimeout(500);
+  }
+  return fechou;
+}
 async function lerAviso(page) {
   const pop = page.locator('.swal2-popup:visible').first();
   if (!(await pop.count())) {
@@ -503,6 +519,7 @@ function resumoPedido(req) {
 // botão de aplicar o filtro, para quando o CSV só aparece depois de filtrar
 async function aplicarFiltro(page, { soFiltrar = false } = {}) {
   const re = soFiltrar ? /^\s*filtrar\s*$/i : /^\s*(filtrar|buscar|pesquisar|gerar|aplicar|consultar|atualizar|ok|confirmar)\s*$/i;
+  await fecharPropaganda(page);
   const filtrar = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible').filter({ hasText: re }).first();
   if (!(await filtrar.count())) return false;
   await filtrar.click().catch(() => {});
@@ -693,6 +710,7 @@ async function abrirPeloMenu(page, caminho) {
 // Botões que só mostram a prévia. "Gerar comissões", "Salvar", "Confirmar" ou "Pagar" gravariam o fechamento: nunca são clicados.
 const RE_FILTRO_SEGURO = /^\s*(filtrar|buscar|pesquisar|consultar|visualizar|calcular|aplicar)\s*$/i;
 async function filtrarComissoes(page) {
+  await fecharPropaganda(page);
   const b = page.locator('button:visible, input[type="submit"]:visible, a.btn:visible').filter({ hasText: RE_FILTRO_SEGURO }).first();
   if (!(await b.count())) return false;
   await b.click({ timeout: 5000 }).catch(() => {});
@@ -715,7 +733,7 @@ async function comissoesDaTela(page) {
     const m = document.body.innerText.match(/(?:mostrando|exibindo|showing)[^\n]{0,40}?\d+\s*(?:a|até|-|to)\s*\d+\s*(?:de|of)\s*([\d.]+)/i);
     return { cab, linhas, total: m ? Number(m[1].replace(/\./g, '')) : null };
   });
-  if (!t || !t.linhas.length) return null;
+  if (!t || !t.linhas.length) { log(`    comissões: ${t ? `tabela sem linhas (colunas: ${t.cab.join(' | ')})` : 'nenhuma tabela na tela'}`); return null; }
   const mapa = t.cab.map((h) => COLUNAS_COMISSAO.find(([re]) => re.test(h))?.[1] || null);
   if (!mapa.includes('PROFISSIONAL') || !mapa.includes('TOTAL LIQUIDO')) { log(`    comissões: colunas da tela ${t.cab.join(' | ')} — não reconhecidas`); return null; }
   if (t.total && t.linhas.length < t.total) { log(`    comissões: li ${t.linhas.length} de ${t.total} linhas — incompleta, não vou usar`); return null; }
@@ -950,6 +968,8 @@ async function main() {
   await ctx.route(/\/api\/painel\/relatorios\//, ajustarPedido);
   ctx.on('page', (p) => { p.on('download', (d) => FILA.push(d)); NOVAS.push(p); });
   page.setDefaultTimeout(20000);
+  // se o aviso de propaganda aparecer no meio de um clique, o Playwright fecha e repete o clique
+  await page.addLocatorHandler(page.locator('.ga-actions__secondary:visible').first(), async (b) => { await b.click({ timeout: 3000 }).catch(() => {}); log('  (aviso do CashBarber fechado: "Entendi")'); }, { noWaitAfter: true });
   page.on('dialog', (d) => d.dismiss().catch(() => {})); // nunca confirma diálogos (exclusões etc.)
   const relatorioFinal = { quando: new Date().toISOString(), modo: MODO, meses: [], erros: [] };
   try {
@@ -975,6 +995,7 @@ async function main() {
             const onde = (pg.url && (await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' }).then((r) => r && r.ok()).catch(() => false)) && new URL(page.url()).pathname) || await abrirPeloMenu(page, pg.menu);
             if (!onde) throw new Error(`não achei ${pg.menu.join(' → ')} no menu do CashBarber`);
             await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+            if (await fecharPropaganda(page)) log(`  ${nome}: aviso do CashBarber fechado`);
             const como = await definirPeriodo(page, per);
             const filial = await escolherFilial(page);
             const datas = await conferirDatas(page, per);
@@ -993,6 +1014,7 @@ async function main() {
           }
           await page.goto(BASE + pg.url, { waitUntil: 'domcontentloaded' });
           await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+          if (await fecharPropaganda(page)) log(`  ${nome}: aviso do CashBarber fechado`);
           let ex = null;
           REL_DESDE = RESP_REL.length;
           if (pg.periodo) {
