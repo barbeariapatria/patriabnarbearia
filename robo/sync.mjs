@@ -818,6 +818,13 @@ function equipeDoCsv(txt) {
   return ls.slice(1).filter((r) => norm(r[i('tipo')]) === 'profissional' && r[i('status')] === '1' && !/^recep/i.test(norm(r[i('nome')])))
     .map((r) => ({ id: r[i('id')], nome: r[i('nome')] })).filter((x) => x.id && x.nome);
 }
+// todas as listas de objetos da resposta (Vendas pode trazer produtos e serviços em listas separadas)
+function todasListas(o, prof = 0, out = []) {
+  if (!o || typeof o !== 'object' || prof > 4) return out;
+  if (Array.isArray(o)) { if (o.every((x) => x && typeof x === 'object' && !Array.isArray(x))) out.push(...o); else for (const v of o) todasListas(v, prof + 1, out); return out; }
+  for (const v of Object.values(o)) todasListas(v, prof + 1, out);
+  return out;
+}
 async function porBarbeiro(ctx, equipe, filialId) {
   const saida = { servicos: [], itens: [] };
   const linhasDe = async (modelo, campo, valor) => {
@@ -827,32 +834,46 @@ async function porBarbeiro(ctx, equipe, filialId) {
     const r = await ctx.request.post(modelo.url, { headers: { ...modelo.headers, 'content-type': 'application/json' }, data: JSON.stringify(corpo), timeout: 60000 }).catch(() => null);
     if (!r || !r.ok()) return null;
     const j = await r.json().catch(() => null);
-    return j ? maiorLista(j) || [] : null;
+    return j ? todasListas(j) : null;
   };
-  const soma = (l) => (l || []).reduce((t, x) => t + (Number(x.ags_valor ?? x.total ?? x.sum ?? 0) || 0), 0);
+  // só as linhas do tipo certo: Serviços traz ser_nome; Vendas traz produtos (pro_nome) e às vezes serviços
+  const util = (tipo) => (x) => (tipo === 'servicos' ? !!x.ser_nome : !!x.pro_nome);
+  const soma = (l, tipo) => (l || []).filter(util(tipo)).reduce((t, x) => t + (Number(x.ags_valor ?? x.total ?? x.sum ?? 0) || 0), 0);
   for (const [rel, tipo] of [['10', 'servicos'], ['15', 'itens']]) {
-    for (const modelo of MODELOS[rel] || []) {
+    // a tela pode fazer o mesmo pedido mais de uma vez: vale só o último (já com a filial)
+    let usado = false;
+    for (const modelo of [...(MODELOS[rel] || [])].reverse()) {
+      if (usado) break;
       let base; try { base = JSON.parse(modelo.corpo); } catch { continue; }
       if (!('barbeiro' in base)) { log(`    por barbeiro: o pedido do relatório ${rel} não tem o campo "barbeiro"`); continue; }
-      const totalGeral = soma(await linhasDe(modelo, 'barbeiro', base.barbeiro));
+      const totalGeral = soma(await linhasDe(modelo, 'barbeiro', base.barbeiro), tipo);
+      if (!totalGeral) continue; // este pedido não traz o tipo procurado (ex.: Vendas de serviços)
       // o formato do campo não é conhecido de antemão: lista de ids, id número ou id texto
       let formato = null;
       for (const f of [(id) => [Number(id)], (id) => Number(id), (id) => String(id), (id) => [String(id)]]) {
-        const l = await linhasDe(modelo, 'barbeiro', f(equipe[0].id));
-        if (l && (soma(l) < totalGeral - 0.01 || !totalGeral)) { formato = f; break; }
+        for (const b of equipe.slice(0, 4)) {
+          const v = soma(await linhasDe(modelo, 'barbeiro', f(b.id)), tipo);
+          if (v > 0 && v < totalGeral - 0.01) { formato = f; break; }
+        }
+        if (formato) break;
       }
       if (!formato) { log(`    por barbeiro: relatório ${rel} não aceitou o filtro de barbeiro (fica sem a divisão)`); continue; }
-      let somaBarbeiros = 0; let n = 0;
+      const linhas = []; let somaBarbeiros = 0; let n = 0;
       for (const b of equipe) {
         const l = await linhasDe(modelo, 'barbeiro', formato(b.id));
         if (!l) continue;
-        for (const x of l) {
-          if (tipo === 'servicos' && x.ser_nome) saida.servicos.push([b.nome, x.ser_nome, Number(x.ags_qtd_servico ?? x.count ?? 0) || 0, Number(x.ags_valor ?? x.sum ?? 0) || 0]);
-          if (tipo === 'itens' && x.pro_nome) saida.itens.push([b.nome, x.pro_nome, 'PRODUTO', Number(x.count ?? 0) || 0, Number(x.total ?? x.sum ?? 0) || 0]);
+        for (const x of l.filter(util(tipo))) {
+          if (tipo === 'servicos') linhas.push([b.nome, x.ser_nome, Number(x.ags_qtd_servico ?? x.count ?? 0) || 0, Number(x.ags_valor ?? x.sum ?? 0) || 0]);
+          else linhas.push([b.nome, x.pro_nome, 'PRODUTO', Number(x.count ?? 0) || 0, Number(x.total ?? x.sum ?? 0) || 0]);
         }
-        somaBarbeiros += soma(l); n++;
+        somaBarbeiros += soma(l, tipo); n++;
       }
-      log(`    por barbeiro: relatório ${rel} · ${n} barbeiros · soma dos barbeiros ${totalGeral ? `${Math.round((somaBarbeiros / totalGeral) * 1000) / 10}%` : '-'} do total`);
+      const pctTotal = Math.round((somaBarbeiros / totalGeral) * 1000) / 10;
+      log(`    por barbeiro: relatório ${rel} · ${n} barbeiros · soma dos barbeiros ${pctTotal}% do total`);
+      usado = true;
+      // mais que o total = o filtro não separou direito: não envia (evita bruto ou bar em dobro)
+      if (pctTotal > 101) { log(`    por barbeiro: relatório ${rel} passou do total — não vou usar`); continue; }
+      saida[tipo].push(...linhas);
     }
   }
   const q = (v) => `"${String(v).replace(/"/g, '""')}"`;

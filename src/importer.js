@@ -528,10 +528,11 @@ async function apply(plan) {
         lista.push({
           professional_id: pid, nome: p.nome,
           ...(plan.bruto_pro.servicos ? { barbearia: p.barbearia, extras: p.extras, servicos: p.servicos } : { barbearia: old.barbearia ?? null, extras: old.extras ?? null, servicos: old.servicos || [] }),
-          produtos: plan.bruto_pro.produtos ? p.produtos : (old.produtos ?? null),
+          // o robô manda serviços e produtos juntos: serviços sem produtos = produtos por barbeiro não confiáveis nesta vez
+          produtos: plan.bruto_pro.produtos ? p.produtos : plan.bruto_pro.servicos ? null : (old.produtos ?? null),
         });
       }
-      for (const o of antigo) if (!lista.some((x) => x.professional_id === o.professional_id)) lista.push(o);
+      for (const o of antigo) if (!lista.some((x) => x.professional_id === o.professional_id)) lista.push(plan.bruto_pro.servicos ? { ...o, barbearia: null, extras: null, servicos: [], produtos: plan.bruto_pro.produtos ? null : o.produtos } : o);
       await saveReport(q, y, m, 'bruto_pro', { por_profissional: lista, atualizado: new Date().toISOString() });
     }
     // comissões: o total líquido vira a comissão do mês de cada profissional
