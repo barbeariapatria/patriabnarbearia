@@ -186,7 +186,7 @@ app.put('/api/admin/metas-individuais', auth.requireAdmin, wrap(async (req) => {
   const { y, m } = ym(req.body || {});
   const b = req.body || {};
   const conv = (v) => (v === '' || v == null ? '' : webhook.toNumber(v));
-  await metas.salvar({ y, m, percentual: b.percentual === '' || b.percentual == null ? null : webhook.toNumber(b.percentual), metas: b.metas ? Object.fromEntries(Object.entries(b.metas).map(([k, v]) => [k, conv(v)])) : null });
+  await metas.salvar({ y, m, base: b.base || null, percentual: b.percentual === '' || b.percentual == null ? null : webhook.toNumber(b.percentual), metas: b.metas ? Object.fromEntries(Object.entries(b.metas).map(([k, v]) => [k, conv(v)])) : null });
   return { ok: true };
 }));
 // ---------------------------------------------------------------- Comissões (Gestão → Gerar comissões do CashBarber)
@@ -564,6 +564,7 @@ app.post('/api/admin/importar', auth.requireAdmin, wrap(async (req) => {
   if (!req.body.confirmar) return { plan };
   const result = await importer.apply(plan);
   if (plan.ano && plan.mes && (plan.comissoes || plan.bruto_pro)) await comissoes.sincronizar(plan.ano, plan.mes);
+  if (plan.ano && plan.mes && (plan.financeiro || plan.comissoes)) await metas.registrarEvolucao(db, plan.ano, plan.mes);
   await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios });
   return { result, plan };
 }));
@@ -618,6 +619,8 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
   }
   const result = await importer.apply(plan);
   if (y && m && (plan.comissoes || plan.bruto_pro)) await comissoes.sincronizar(y, m);
+  // acumulado do mês de cada barbeiro hoje, já com a comissão (gráfico da meta individual)
+  if (y && m && (plan.financeiro || plan.comissoes)) await metas.registrarEvolucao(db, y, m);
   await setSetting('ultima_importacao', { em: new Date().toISOString(), ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, origem: 'robô', ignorados_por_seguranca: ignoradosPorSeguranca });
   return {
     result, relatorios: plan.relatorios, ignorados: plan.ignorados, ignorados_por_seguranca: ignoradosPorSeguranca,

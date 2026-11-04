@@ -1,11 +1,12 @@
-// Metas individuais: cada barbeiro tem a própria meta de faturamento no mês.
-// Automática = melhor faturamento dele nos 2 meses anteriores + 20% (arredondada para cima em R$ 50);
+// Metas individuais: cada barbeiro tem a própria meta no mês, sobre o que ele RECEBE (comissão) ou sobre o faturamento.
+// Automática = melhor resultado dele nos 2 meses anteriores + 20% (arredondada para cima em R$ 50);
 // o dono pode ajustar a meta de qualquer um em Admin → Metas e configurações.
 const { db, getSetting, setSetting } = require('./db');
 const { getMonthDays, todayParts, daysInMonth, round2, MONTHS } = require('./metrics');
 const { normalize } = require('./team');
 
-const DEFAULTS = { percentual: 20, meses_base: 2, ajustes: {} };
+const DEFAULTS = { percentual: 20, meses_base: 2, base: 'comissao', ajustes: {} };
+const CAMPO = { comissao: 'comissao', faturamento: 'faturamento_total' };
 const chave = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
 const anterior = (y, m, n) => { let yy = y; let mm = m; for (let i = 0; i < n; i++) { mm--; if (!mm) { mm = 12; yy--; } } return { y: yy, m: mm }; };
 
@@ -31,9 +32,10 @@ async function calcular(y, m) {
 
   const pros = (await db.all('SELECT id, name, active FROM professionals'))
     .filter((p) => !/^RECEP/.test(normalize(p.name)) && !consumo.includes(normalize(p.name)));
-  const linhas = await db.all(`SELECT professional_id, year, month, faturamento_total FROM professional_monthly
+  const base = CAMPO[r.base] ? r.base : 'comissao';
+  const linhas = await db.all(`SELECT professional_id, year, month, faturamento_total, comissao FROM professional_monthly
     WHERE year * 100 + month IN (${[...bases, { y, m }].map(() => '?').join(', ')})`, ...[...bases, { y, m }].map((b) => b.y * 100 + b.m));
-  const fat = (pid, b) => Number(linhas.find((l) => l.professional_id === pid && l.year === b.y && l.month === b.m)?.faturamento_total) || 0;
+  const fat = (pid, b) => Number(linhas.find((l) => l.professional_id === pid && l.year === b.y && l.month === b.m)?.[CAMPO[base]]) || 0;
 
   // dias de trabalho do mês (domingos e feriados de Metas e configurações ficam de fora)
   const dias = await getMonthDays(y, m);
@@ -67,12 +69,14 @@ async function calcular(y, m) {
       percentual: meta ? round2((realizado / meta) * 100) : 0,
       por_dia: falta ? round2(falta / Math.max(1, uteisRestantes)) : 0,
       esperado_ate_hoje: esperado, no_ritmo: realizado >= esperado, projecao,
-      evolucao: Object.entries(evo).sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date, valor: Number(v?.[p.id]) || 0 })),
+      // cada ponto guarda { f: faturamento, c: comissão } (pontos antigos: só o faturamento)
+      evolucao: Object.entries(evo).sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => { const x = v?.[p.id]; const o = typeof x === 'object' && x ? x : { f: Number(x) || 0 }; return { date, valor: Number(base === 'comissao' ? o.c : o.f) || 0 }; })
+        .filter((e) => base !== 'comissao' || Object.values(evo[e.date] || {}).some((x) => typeof x === 'object')),
     });
   }
   lista.sort((a, b) => b.percentual - a.percentual);
   return {
-    ano: y, mes: m, mes_nome: MONTHS[m - 1], percentual: pct, meses_base: bases.map((b) => `${MONTHS[b.m - 1]}/${b.y}`),
+    ano: y, mes: m, mes_nome: MONTHS[m - 1], percentual: pct, base, meses_base: bases.map((b) => `${MONTHS[b.m - 1]}/${b.y}`),
     dia_apuracao: ref, dias_uteis: uteis.length, dias_uteis_passados: uteisPassados, dias_uteis_restantes: uteisRestantes,
     dias_uteis_lista: uteis.map((d) => d.date), lista,
   };
@@ -85,16 +89,17 @@ async function registrarEvolucao(q, y, m) {
   const passado = y < t.y || (y === t.y && m < t.m);
   if (!corrente && !passado) return;
   const dia = corrente ? `${y}-${String(m).padStart(2, '0')}-${String(t.d).padStart(2, '0')}` : `${y}-${String(m).padStart(2, '0')}-${String(daysInMonth(y, m)).padStart(2, '0')}`;
-  const rows = await q.all('SELECT professional_id, faturamento_total FROM professional_monthly WHERE year = ? AND month = ?', y, m);
+  const rows = await q.all('SELECT professional_id, faturamento_total, comissao FROM professional_monthly WHERE year = ? AND month = ?', y, m);
   const atual = await q.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'evolucao'", y, m);
   let dias = {}; try { dias = atual ? (typeof atual.data === 'string' ? JSON.parse(atual.data) : atual.data)?.dias || {} : {}; } catch {}
-  dias[dia] = Object.fromEntries(rows.map((r) => [r.professional_id, round2(r.faturamento_total || 0)]));
+  dias[dia] = Object.fromEntries(rows.map((r) => [r.professional_id, { f: round2(r.faturamento_total || 0), c: round2(r.comissao || 0) }]));
   await q.run(`INSERT INTO monthly_reports(year, month, kind, data, updated_at) VALUES(?, ?, 'evolucao', ?, CURRENT_TIMESTAMP)
     ON CONFLICT(year, month, kind) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`, y, m, JSON.stringify({ dias }));
 }
 
-async function salvar({ y, m, percentual, metas }) {
+async function salvar({ y, m, percentual, metas, base }) {
   const r = await regras();
+  if (base) { if (!CAMPO[base]) throw new Error('Base inválida'); r.base = base; }
   if (percentual != null && percentual !== '') {
     const p = Number(percentual);
     if (!(p >= 0 && p <= 300)) throw new Error('Percentual inválido');

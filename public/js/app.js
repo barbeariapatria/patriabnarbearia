@@ -1272,8 +1272,9 @@
       const mi = await api(`/api/metas-individuais?ano=${state.y}&mes=${state.m}`);
       $('#metasInd').innerHTML = `
         <div class="card-h"><h3>${icon('target')} Metas individuais · ${mi.mes_nome} ${mi.ano}</h3><div class="grow"></div>
+          <label class="muted" style="font-size:13px;display:flex;align-items:center;gap:8px">Meta sobre <select class="cell" id="miBase" aria-label="Base da meta"><option value="comissao" ${mi.base === 'comissao' ? 'selected' : ''}>o que recebe (comissão)</option><option value="faturamento" ${mi.base === 'faturamento' ? 'selected' : ''}>faturamento</option></select></label>
           <label class="muted" style="font-size:13px;display:flex;align-items:center;gap:8px">Acima do melhor mês <input class="cell num" id="miPct" style="width:70px" value="${String(mi.percentual).replace('.', ',')}" inputmode="decimal" aria-label="Percentual acima do melhor mês"> %</label></div>
-        <p class="muted" style="margin:0 0 12px;font-size:13px">Meta automática = melhor faturamento do barbeiro entre ${mi.meses_base.join(' e ')} + o percentual, arredondada para cima em R$ 50. Preencha "Meta ajustada" só para mudar a de alguém. Cada barbeiro vê a própria meta em <b>Meu desempenho</b>.</p>
+        <p class="muted" style="margin:0 0 12px;font-size:13px">Meta automática = ${mi.base === 'comissao' ? 'o que o barbeiro mais recebeu de comissão' : 'o melhor faturamento do barbeiro'} entre ${mi.meses_base.join(' e ')} + o percentual, arredondada para cima em R$ 50. Preencha "Meta ajustada" só para mudar a de alguém. Cada barbeiro vê a própria meta em <b>Meu desempenho</b>.</p>
         ${mi.lista.length ? `<div class="table-wrap"><table class="t">
           <thead><tr><th>Barbeiro</th>${mi.meses_base.map((b) => `<th class="r">${b}</th>`).join('')}<th class="r">Meta automática</th><th class="r">Meta ajustada</th><th class="r">Realizado</th><th class="r">%</th></tr></thead>
           <tbody>${mi.lista.map((x) => `<tr><td><b>${esc(x.nome)}</b></td>${x.historico.map((h) => `<td class="r num">${h.valor ? brl(h.valor) : '—'}</td>`).join('')}
@@ -1282,8 +1283,9 @@
             <td class="r num">${brl(x.realizado)}</td><td class="r num"><b>${pct(x.percentual)}</b></td></tr>`).join('')}</tbody>
         </table></div>` : emptyState('Sem barbeiros com histórico', `Não há faturamento em ${mi.meses_base.join(' nem ')} para calcular as metas.`)}
         <button class="btn btn-primary" id="miSave" style="margin-top:14px">${icon('check')} Salvar metas individuais</button>`;
+      $('#miBase').onchange = async () => { try { await api('/api/admin/metas-individuais', { method: 'PUT', body: { ano: state.y, mes: state.m, base: $('#miBase').value } }); drawMetasInd(); } catch (e) { toast(e.message, 'err'); } };
       $('#miSave').onclick = async () => {
-        const body = { ano: state.y, mes: state.m, percentual: $('#miPct').value.trim() === '' ? '' : parseBR($('#miPct').value), metas: {} };
+        const body = { ano: state.y, mes: state.m, base: $('#miBase').value, percentual: $('#miPct').value.trim() === '' ? '' : parseBR($('#miPct').value), metas: {} };
         $$('[data-mi]').forEach((i) => { body.metas[i.dataset.mi] = i.value.trim() === '' ? '' : parseBR(i.value); });
         try { await api('/api/admin/metas-individuais', { method: 'PUT', body }); toast('Metas individuais salvas'); drawMetasInd(); } catch (e) { toast(e.message, 'err'); }
       };
@@ -2049,7 +2051,8 @@
     const esperadoPct = mt.meta ? Math.min(100, (mt.esperado_ate_hoje / mt.meta) * 100) : 0;
     const passado = mi.dias_uteis_restantes === 0;
     return `<div class="card fade-in" style="border:1px solid var(--accent)">
-      <div class="card-h"><h3>${icon('target')} Sua meta de ${mi.mes_nome}</h3><div class="grow"></div><span class="badge ${status[0]}">${status[1]}</span></div>
+      <div class="card-h"><h3>${icon('target')} Sua meta de ${mi.base === 'comissao' ? 'ganhos' : 'faturamento'} · ${mi.mes_nome}</h3><div class="grow"></div><span class="badge ${status[0]}">${status[1]}</span></div>
+      ${mi.base === 'comissao' ? '<div class="muted" style="font-size:12.5px;margin:-4px 0 10px">Quanto você recebe no mês (comissão de serviços, assinatura e produtos, com bônus e menos vales)</div>' : ''}
       <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 18px">
         <div class="num" style="font-family:var(--font-display);font-size:34px;font-weight:700;color:var(--accent)">${brl(mt.realizado)}</div>
         <div class="muted" style="font-size:15px;padding-bottom:6px">de <b style="color:var(--text)">${brl(mt.meta)}</b> · ${pct(mt.percentual)}</div>
@@ -2067,7 +2070,7 @@
         ].map(([l, v, f]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:20px;font-weight:700">${v}</div><div class="muted" style="font-size:11.5px">${f}</div></div>`).join('')}
       </div>
       ${mt.evolucao.length > 1 ? '<div class="chart-box sm" style="margin-top:14px"><canvas id="cMeta"></canvas></div>' : ''}
-      <p class="muted" style="font-size:12px;margin:12px 0 0">${mt.ajustada ? 'Meta definida pela barbearia.' : `Meta = seu melhor mês entre ${mi.meses_base.join(' e ')} (${mt.melhor_mes}: ${brl(mt.melhor_valor)}) + ${String(mi.percentual).replace('.', ',')}%.`} Atualiza todo dia às 20h.</p>
+      <p class="muted" style="font-size:12px;margin:12px 0 0">${mt.ajustada ? 'Meta definida pela barbearia.' : `Meta = ${mi.base === 'comissao' ? 'o que você mais recebeu' : 'seu melhor faturamento'} entre ${mi.meses_base.join(' e ')} (${mt.melhor_mes}: ${brl(mt.melhor_valor)}) + ${String(mi.percentual).replace('.', ',')}%.`} Atualiza todo dia às 20h.</p>
     </div>`;
   }
   function metaChart(mt, mi) {
