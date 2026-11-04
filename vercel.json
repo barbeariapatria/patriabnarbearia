@@ -9,6 +9,6 @@
   },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.js" },
-    { "source": "/((?!css/|js/|img/|bento/|vendor/|favicon).*)", "destination": "/index.html" }
+    { "source": "/((?!css/|js/|img/|bento/|vendor/|favicon|manifest).*)", "destination": "/index.html" }
   ]
 }

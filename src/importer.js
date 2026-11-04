@@ -11,6 +11,7 @@
 const { db, tx, getSetting, setSetting } = require('./db');
 const { iso, round2, daysInMonth, todayIso, MONTHS } = require('./metrics');
 const { normalize, matchProfessional, displayName, directory } = require('./team');
+const { registrarEvolucao } = require('./metas');
 
 function parseCSV(text) {
   const rows = [];
@@ -517,6 +518,8 @@ async function apply(plan) {
       await saveReport(q, y, m, 'bar', { ...resto, por_profissional: (por_profissional || []).map(({ nome, valor }) => ({ nome, valor })) });
     }
     if (plan.produtos && y && m) await saveReport(q, y, m, 'produtos', plan.produtos);
+    // acumulado do mês de cada barbeiro hoje (gráfico da meta individual)
+    if (y && m && (plan.financeiro || plan.bar?.por_profissional?.length)) await registrarEvolucao(q, y, m);
     // bruto por barbeiro: junta com o que já existe (serviços e produtos podem vir em envios diferentes)
     if (plan.bruto_pro && y && m) {
       const atual = await q.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'bruto_pro'", y, m);

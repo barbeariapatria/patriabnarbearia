@@ -9,6 +9,7 @@ const seed = require('./seed');
 const importer = require('./importer');
 const access = require('./access');
 const comissoes = require('./comissoes');
+const metas = require('./metas');
 const { normalize } = require('./team');
 
 // Prepara o banco uma vez por instância (em serverless, a cada "cold start")
@@ -173,6 +174,21 @@ app.get('/api/profissionais', auth.requireAuth, wrap(async (req) => {
   return access.ownOnly(req.access) ? all.filter((p) => p.id === req.access.professional_id) : all;
 }));
 // Últimos eventos do webhook, resumidos para a página inicial (qualquer usuário logado)
+// ---------------------------------------------------------------- Metas individuais
+// Barbeiro com "só os próprios números" vê só a dele; o painel de cada um atualiza com o robô (20h)
+app.get('/api/metas-individuais', auth.requireAuth, needPros, wrap(async (req) => {
+  const { y, m } = ym(req.query);
+  const r = await metas.calcular(y, m);
+  if (access.ownOnly(req.access)) r.lista = r.lista.filter((x) => x.professional_id === req.access.professional_id);
+  return r;
+}));
+app.put('/api/admin/metas-individuais', auth.requireAdmin, wrap(async (req) => {
+  const { y, m } = ym(req.body || {});
+  const b = req.body || {};
+  const conv = (v) => (v === '' || v == null ? '' : webhook.toNumber(v));
+  await metas.salvar({ y, m, percentual: b.percentual === '' || b.percentual == null ? null : webhook.toNumber(b.percentual), metas: b.metas ? Object.fromEntries(Object.entries(b.metas).map(([k, v]) => [k, conv(v)])) : null });
+  return { ok: true };
+}));
 // ---------------------------------------------------------------- Comissões (Gestão → Gerar comissões do CashBarber)
 const PARTES_COM = ['barbearia', 'extras', 'assinatura', 'produtos'];
 const needComissoes = (req, res, next) => (access.canPage(req.access, 'comissoes') ? next() : deny(res));

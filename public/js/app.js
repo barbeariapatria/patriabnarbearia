@@ -287,7 +287,7 @@
     { path: 'admin/dados', label: 'Dados do mês', icon: 'db', title: 'Dados do mês', month: true, admin: true },
     { path: 'admin/lancamentos', label: 'Lançamentos', icon: 'edit', title: 'Lançamentos por profissional', month: true, admin: true },
     { path: 'admin/equipe', label: 'Equipe', icon: 'team', title: 'Equipe', admin: true },
-    { path: 'admin/metas', label: 'Metas e configurações', icon: 'target', title: 'Metas e configurações', admin: true },
+    { path: 'admin/metas', label: 'Metas e configurações', icon: 'target', title: 'Metas e configurações', month: true, admin: true },
     { path: 'admin/usuarios', label: 'Usuários e acessos', icon: 'shield', title: 'Usuários e acessos', admin: true },
     { path: 'admin/integracao', label: 'Integração & Webhook', icon: 'plug', title: 'Integração CashBarber', admin: true },
   ];
@@ -933,7 +933,11 @@
       api(`/api/profissionais/stats?${periodQS()}`),
       api(`/api/profissionais/ano?ano=${periodYear()}`),
     ]);
-    const rep = await api(`/api/relatorios?${periodQS()}`).catch(() => null);
+    const [rep, metasInd] = await Promise.all([
+      api(`/api/relatorios?${periodQS()}`).catch(() => null),
+      isRange() ? null : api(`/api/metas-individuais?ano=${state.y}&mes=${state.m}`).catch(() => null),
+    ]);
+    const metaDe = (pid) => metasInd?.lista.find((x) => x.professional_id === pid && x.meta);
     const list = ps.profissionais.filter((p) => p.has_data).sort((a, b) => b.faturamento_total - a.faturamento_total);
     $('#pageSub').textContent = `${list.length} profissionais com dados em ${ps.mes_nome}${ps.parcial ? ' · dados mensais: o período inclui os meses inteiros que ele toca' : ''}`;
     if (!list.length) {
@@ -969,7 +973,9 @@
               <div><b>${esc(p.name)}</b><span class="muted" style="font-size:12px">${pct(share)} do faturamento</span></div>
               ${i === 0 ? `<span class="medal">${icon('star')} Líder</span>` : `<span class="muted" style="margin-left:auto;font-weight:700">#${i + 1}</span>`}</div>
             <div class="big num">${brl(p.faturamento_total)}</div>
-            <div class="progress" style="height:6px;margin-top:10px"><i data-w="${share}" style="width:0;background:${proColor(p.professional_id)}"></i></div>
+            ${metaDe(p.professional_id) ? (() => { const mt = metaDe(p.professional_id); return `<div class="muted" style="font-size:12px;margin-top:10px;display:flex;justify-content:space-between"><span>Meta ${brlShort(mt.meta)}</span><b style="color:${mt.percentual >= 100 ? 'var(--good)' : mt.no_ritmo ? 'var(--accent)' : 'var(--bad)'}">${pct(mt.percentual)}${mt.percentual >= 100 ? ' · batida' : mt.no_ritmo ? ' · no ritmo' : ' · abaixo do ritmo'}</b></div>
+            <div class="progress" style="height:6px;margin-top:6px"><i data-w="${Math.min(100, mt.percentual)}" style="width:0;background:${proColor(p.professional_id)}"></i></div>`; })()
+              : `<div class="progress" style="height:6px;margin-top:10px"><i data-w="${share}" style="width:0;background:${proColor(p.professional_id)}"></i></div>`}
             <div class="mini">
               <div>Atendimentos<b>${int(p.clientes_atendidos)}</b></div>
               <div>Ticket<b>${brlShort(p.ticket_medio)}</b></div>
@@ -1259,7 +1265,30 @@
           </div>
         </div>
       </div>
+      <div class="card fade-in" id="metasInd"></div>
       <div class="card fade-in" id="metasMes"></div>`;
+    // Metas individuais dos barbeiros (mês do topo)
+    const drawMetasInd = async () => {
+      const mi = await api(`/api/metas-individuais?ano=${state.y}&mes=${state.m}`);
+      $('#metasInd').innerHTML = `
+        <div class="card-h"><h3>${icon('target')} Metas individuais · ${mi.mes_nome} ${mi.ano}</h3><div class="grow"></div>
+          <label class="muted" style="font-size:13px;display:flex;align-items:center;gap:8px">Acima do melhor mês <input class="cell num" id="miPct" style="width:70px" value="${String(mi.percentual).replace('.', ',')}" inputmode="decimal" aria-label="Percentual acima do melhor mês"> %</label></div>
+        <p class="muted" style="margin:0 0 12px;font-size:13px">Meta automática = melhor faturamento do barbeiro entre ${mi.meses_base.join(' e ')} + o percentual, arredondada para cima em R$ 50. Preencha "Meta ajustada" só para mudar a de alguém. Cada barbeiro vê a própria meta em <b>Meu desempenho</b>.</p>
+        ${mi.lista.length ? `<div class="table-wrap"><table class="t">
+          <thead><tr><th>Barbeiro</th>${mi.meses_base.map((b) => `<th class="r">${b}</th>`).join('')}<th class="r">Meta automática</th><th class="r">Meta ajustada</th><th class="r">Realizado</th><th class="r">%</th></tr></thead>
+          <tbody>${mi.lista.map((x) => `<tr><td><b>${esc(x.nome)}</b></td>${x.historico.map((h) => `<td class="r num">${h.valor ? brl(h.valor) : '—'}</td>`).join('')}
+            <td class="r num">${x.automatica ? brl(x.automatica) : '—'}</td>
+            <td class="r"><input class="cell num" style="width:120px" data-mi="${x.professional_id}" value="${x.ajustada ? num2(x.meta) : ''}" placeholder="${x.automatica ? num2(x.automatica) : '0,00'}" inputmode="decimal" aria-label="Meta ajustada de ${esc(x.nome)}"></td>
+            <td class="r num">${brl(x.realizado)}</td><td class="r num"><b>${pct(x.percentual)}</b></td></tr>`).join('')}</tbody>
+        </table></div>` : emptyState('Sem barbeiros com histórico', `Não há faturamento em ${mi.meses_base.join(' nem ')} para calcular as metas.`)}
+        <button class="btn btn-primary" id="miSave" style="margin-top:14px">${icon('check')} Salvar metas individuais</button>`;
+      $('#miSave').onclick = async () => {
+        const body = { ano: state.y, mes: state.m, percentual: $('#miPct').value.trim() === '' ? '' : parseBR($('#miPct').value), metas: {} };
+        $$('[data-mi]').forEach((i) => { body.metas[i.dataset.mi] = i.value.trim() === '' ? '' : parseBR(i.value); });
+        try { await api('/api/admin/metas-individuais', { method: 'PUT', body }); toast('Metas individuais salvas'); drawMetasInd(); } catch (e) { toast(e.message, 'err'); }
+      };
+    };
+    drawMetasInd().catch((e) => { $('#metasInd').innerHTML = `<div class="form-error">${esc(e.message)}</div>`; });
     // Metas por mês (vazio = usa a meta padrão)
     const metasMes = { ...(c.metas_mes || {}) };
     let metasAno = state.y;
@@ -2014,18 +2043,64 @@
 
 
   // ============================================================ Meu desempenho (o barbeiro vê os próprios números)
+  // Card da meta individual: quanto falta, quanto por dia e se está no ritmo
+  function metaCardHtml(mt, mi) {
+    const status = mt.percentual >= 100 ? ['good', 'Meta batida!'] : mt.no_ritmo ? ['good', 'No ritmo da meta'] : ['bad', 'Abaixo do ritmo'];
+    const esperadoPct = mt.meta ? Math.min(100, (mt.esperado_ate_hoje / mt.meta) * 100) : 0;
+    const passado = mi.dias_uteis_restantes === 0;
+    return `<div class="card fade-in" style="border:1px solid var(--accent)">
+      <div class="card-h"><h3>${icon('target')} Sua meta de ${mi.mes_nome}</h3><div class="grow"></div><span class="badge ${status[0]}">${status[1]}</span></div>
+      <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 18px">
+        <div class="num" style="font-family:var(--font-display);font-size:34px;font-weight:700;color:var(--accent)">${brl(mt.realizado)}</div>
+        <div class="muted" style="font-size:15px;padding-bottom:6px">de <b style="color:var(--text)">${brl(mt.meta)}</b> · ${pct(mt.percentual)}</div>
+      </div>
+      <div style="position:relative;margin:14px 0 6px">
+        <div class="progress" style="height:14px"><i style="width:${Math.min(100, mt.percentual)}%;background:linear-gradient(90deg,#b5862a,#f0c96e)"></i></div>
+        ${!passado && esperadoPct > 0 ? `<div title="Onde você deveria estar hoje" style="position:absolute;top:-4px;left:calc(${esperadoPct}% - 1px);width:2px;height:22px;background:var(--text);opacity:.7"></div>` : ''}
+      </div>
+      ${!passado && esperadoPct > 0 ? `<div class="muted" style="font-size:12px;margin-bottom:12px">A marca mostra onde você deveria estar hoje: ${brl(mt.esperado_ate_hoje)}</div>` : '<div style="height:12px"></div>'}
+      <div class="grid g-3" style="gap:10px">
+        ${[
+          [mt.falta ? 'Falta' : 'Passou da meta', mt.falta ? brl(mt.falta) : brl(mt.realizado - mt.meta), passado ? 'mês encerrado' : `${mi.dias_uteis_restantes} dias de trabalho pela frente`],
+          ['Por dia de trabalho', mt.falta && !passado ? brl(mt.por_dia) : '—', mt.falta && !passado ? 'para fechar a meta' : (mt.falta ? 'mês encerrado' : 'meta garantida')],
+          ['No ritmo atual', mt.projecao ? brl(mt.projecao) : '—', mt.projecao ? (mt.projecao >= mt.meta ? 'você fecha acima da meta' : `faltariam ${brl(mt.meta - mt.projecao)}`) : 'previsão do fim do mês'],
+        ].map(([l, v, f]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:20px;font-weight:700">${v}</div><div class="muted" style="font-size:11.5px">${f}</div></div>`).join('')}
+      </div>
+      ${mt.evolucao.length > 1 ? '<div class="chart-box sm" style="margin-top:14px"><canvas id="cMeta"></canvas></div>' : ''}
+      <p class="muted" style="font-size:12px;margin:12px 0 0">${mt.ajustada ? 'Meta definida pela barbearia.' : `Meta = seu melhor mês entre ${mi.meses_base.join(' e ')} (${mt.melhor_mes}: ${brl(mt.melhor_valor)}) + ${String(mi.percentual).replace('.', ',')}%.`} Atualiza todo dia às 20h.</p>
+    </div>`;
+  }
+  function metaChart(mt, mi) {
+    const el = $('#cMeta'); if (!el) return;
+    const labels = mi.dias_uteis_lista.map((d) => d.slice(8, 10));
+    const ideal = mi.dias_uteis_lista.map((_, i) => round2((mt.meta * (i + 1)) / mi.dias_uteis_lista.length));
+    const real = mi.dias_uteis_lista.map((d) => { const pts = mt.evolucao.filter((e) => e.date <= d); return pts.length && d <= mt.evolucao[mt.evolucao.length - 1].date ? pts[pts.length - 1].valor : null; });
+    chart(el, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Você', data: real, borderColor: cssVar('--accent'), backgroundColor: hexA('#d4a64a', 0.15), fill: true, tension: 0.25, pointRadius: 2, spanGaps: true },
+        { label: 'Ritmo da meta', data: ideal, borderColor: cssVar('--muted'), borderDash: [6, 5], pointRadius: 0, fill: false },
+      ] },
+      options: { maintainAspectRatio: false, scales: { y: { ...moneyAxis, beginAtZero: true }, x: { grid: { display: false }, border: { display: false } } }, plugins: { legend: { display: true, labels: { boxWidth: 12 } }, tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}: ${brl(c.raw)}` } } } },
+    });
+  }
+  const round2 = (v) => Math.round(v * 100) / 100;
+
   async function viewMeuPainel(view) {
     const pid = state.access?.professional_id;
-    const [ps, yr, rep] = await Promise.all([
+    const [ps, yr, rep, mi] = await Promise.all([
       api(`/api/profissionais/stats?${periodQS()}`),
       api(`/api/profissionais/ano?ano=${periodYear()}`),
       api(`/api/relatorios?${periodQS()}`).catch(() => null),
+      isRange() ? null : api(`/api/metas-individuais?ano=${state.y}&mes=${state.m}`).catch(() => null),
     ]);
+    const mt = mi?.lista.find((x) => x.professional_id === pid && x.meta);
     const me = ps.profissionais.find((p) => p.professional_id === pid);
     const nome = state.access.profissional || state.user.name;
     $('#pageSub').textContent = `${nome} · ${psTitle(ps)}`;
     if (!me?.has_data) {
-      view.innerHTML = `<div class="card">${emptyState(`Sem números em ${psTitle(ps)}`, 'Assim que o mês for importado do CashBarber, seus números aparecem aqui. Use as setas no topo para ver outros meses.')}</div>`;
+      view.innerHTML = `${mt ? metaCardHtml(mt, mi) : ''}<div class="card">${emptyState(`Sem números em ${psTitle(ps)}`, 'Assim que o mês for importado do CashBarber, seus números aparecem aqui. Use as setas no topo para ver outros meses.')}</div>`;
+      if (mt) metaChart(mt, mi);
       return;
     }
     const team = ps.profissionais.filter((p) => p.has_data).sort((a, b) => b.faturamento_total - a.faturamento_total);
@@ -2038,7 +2113,7 @@
     const extras = Object.entries(me.extras || {}).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
     const maxE = Math.max(1, ...extras.map((e) => e[1]));
 
-    view.innerHTML = `
+    view.innerHTML = `${mt ? metaCardHtml(mt, mi) : ''}
       <div class="card hero fade-in">
         <div class="avatar" style="width:72px;height:72px;font-size:24px;background:${proColor(pid)};color:#fff;border:none">${esc(initials(nome))}</div>
         <div style="flex:1;min-width:0">
@@ -2066,6 +2141,7 @@
       ${extras.length ? `<div class="card fade-in"><div class="card-h"><h3>${icon('spark')} Serviços adicionais</h3></div>
         <div class="comp-list">${extras.map(([k, v]) => `<div class="comp-item"><div class="l"><span>${esc(k)}</span><b class="num">${int(v)}</b></div><div class="bar"><i style="width:${(v / maxE) * 100}%;background:${proColor(pid)}"></i></div></div>`).join('')}</div></div>` : ''}`;
 
+    if (mt) metaChart(mt, mi);
     const proName = state.pros.find((p) => p.id === pid)?.name || nome;
     chart($('#cMe'), {
       type: 'bar',
