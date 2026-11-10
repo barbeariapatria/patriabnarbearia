@@ -63,12 +63,15 @@ async function calcular(y, m, { professionalId = null } = {}) {
       servicos: b.servicos || [],
     };
   });
-  const media = (k) => { const v = ind.map((i) => i[k]).filter((n) => n != null && Number.isFinite(n)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  // a média da equipe é só dos barbeiros (quem faz cabelo/barba); estética e manicure ficam fora da comparação
+  for (const i of ind) { const b = brutoDe(i.pid); i.barbeiro = (Number(b.barbearia) || 0) > 0 || !(b.servicos || []).length; }
+  const barbeirosInd = ind.filter((i) => i.barbeiro);
+  const media = (k) => { const v = barbeirosInd.map((i) => i[k]).filter((n) => n != null && Number.isFinite(n)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
   const medias = { extras_atend: media('extras_atend'), produtos_atend: media('produtos_atend'), assinaturas: media('assinaturas'), retorno: media('retorno'), fidelidade: media('fidelidade') };
   // taxa de cada serviço extra na equipe (vezes por atendimento)
-  const atendEquipe = ind.reduce((t, i) => t + i.at, 0);
+  const atendEquipe = barbeirosInd.reduce((t, i) => t + i.at, 0);
   const taxaEquipe = {};
-  for (const i of ind) for (const s of i.servicos) if (!s.barbearia) taxaEquipe[s.nome] = (taxaEquipe[s.nome] || 0) + (Number(s.quantidade) || 0);
+  for (const i of barbeirosInd) for (const s of i.servicos) if (!s.barbearia) taxaEquipe[s.nome] = (taxaEquipe[s.nome] || 0) + (Number(s.quantidade) || 0);
   for (const k of Object.keys(taxaEquipe)) taxaEquipe[k] = atendEquipe ? taxaEquipe[k] / atendEquipe : 0;
 
   const fim = addDias(hoje, 6);
@@ -76,7 +79,8 @@ async function calcular(y, m, { professionalId = null } = {}) {
     const i = ind.find((z) => z.pid === x.professional_id);
     const fortes = []; const melhorar = [];
     const comp = (k, nome, fmt, alto = 1.1, baixo = 0.9, dica = '') => {
-      if (i[k] == null || medias[k] == null || !medias[k]) return;
+      if (!i.barbeiro || i[k] == null || medias[k] == null || !medias[k]) return;
+      if (k === 'assinaturas' && medias[k] < 1) return; // a equipe quase não vende: comparar não diz nada
       const r = i[k] / medias[k];
       const txt = `${nome}: ${fmt(i[k])} (equipe ${fmt(medias[k])})`;
       if (r >= alto) fortes.push(txt); else if (r <= baixo) melhorar.push(dica ? `${txt} — ${dica}` : txt);
@@ -88,11 +92,11 @@ async function calcular(y, m, { professionalId = null } = {}) {
     comp('fidelidade', 'Voltam com você', (v) => `${Math.round(v)}%`, 1.05, 0.95, 'crie vínculo: lembre do corte e marque o retorno');
     // o extra com maior oportunidade: onde ele está mais abaixo da equipe
     let oportunidade = null;
-    if (i.at) {
+    if (i.at && i.barbeiro) {
       for (const [nome, taxa] of Object.entries(taxaEquipe)) {
         const meu = (i.servicos.find((s) => s.nome === nome)?.quantidade || 0) / i.at;
         const ganho = (taxa - meu) * i.at;
-        if (taxa > 0 && ganho > 1 && (!oportunidade || ganho > oportunidade.a_mais)) oportunidade = { servico: nome, equipe_pct: round2(taxa * 100), seu_pct: round2(meu * 100), a_mais: Math.round(ganho) };
+        if (taxa > 0 && ganho >= 3 && (!oportunidade || ganho > oportunidade.a_mais)) oportunidade = { servico: nome, equipe_pct: round2(taxa * 100), seu_pct: round2(meu * 100), a_mais: Math.round(ganho) };
       }
     }
     // clientes que devem voltar nesta semana (pelo intervalo de cada um) e o que oferecer
