@@ -42,7 +42,12 @@ const money = (v) => {
   if (!s) return 0;
   return Number(s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s) || 0;
 };
-const brDate = (v) => { const m = String(v || '').match(/(\d{2})\/(\d{2})\/(\d{4})/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+const brDate = (v) => {
+  const m = String(v || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  const iso = String(v || '').match(/(\d{4})-(\d{2})-(\d{2})/); // alguns relatórios trazem AAAA-MM-DD
+  return iso ? `${iso[1]}-${iso[2]}-${iso[3]}` : null;
+};
 
 function detect(rows) {
   const k = Object.keys(rows[0] || {});
