@@ -42,6 +42,21 @@
       "periodo": true
     },
     {
+      "url": "/relatorio/relatorio08",
+      "nome": "Faturamento por profissional",
+      "periodo": true
+    },
+    {
+      "url": "/relatorio/relatorio30",
+      "nome": "Vendas de planos (por quem vendeu)",
+      "periodo": true
+    },
+    {
+      "url": "/relatorio/relatorio11",
+      "nome": "Captação de clientes",
+      "periodo": true
+    },
+    {
       "url": "/usuario",
       "nome": "Usuários (equipe)",
       "periodo": false

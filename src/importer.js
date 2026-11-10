@@ -49,6 +49,14 @@ function detect(rows) {
   if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
   // Gestão → Gerar comissões: o que cada profissional recebe no período
   if (k.includes('PROFISSIONAL') && k.includes('TOTAL LIQUIDO')) return 'comissoes';
+  // Captação de clientes (como conheceu, data de cadastro, indicado por)
+  if (k.includes('COMO CONHECEU') && k.includes('DATA DE CADASTRO')) return 'captacao';
+  // Vendas por origem: planos vendidos e quem vendeu/indicou
+  if (k.includes('QUEM INDICOU?') && k.includes('PLANO')) return 'vendas_planos';
+  // Ticket médio por atendimento: faturamento de produto, serviço e assinatura de cada profissional (números do CashBarber)
+  if (k.includes('PROFISSIONAL') && k.includes('FATURAMENTO PRODUTO') && k.includes('VALOR EM ASSINATURAS')) return 'ticket_pro';
+  // Produtos vendidos (montado pelo robô com o que o CashBarber marca como produto): cosméticos + bar
+  if (k.includes('PRODUTO') && k.includes('QUANTIDADE') && k.includes('VALOR') && !k.includes('PROFISSIONAL')) return 'cosmeticos';
   // serviços de cada barbeiro (relatório Serviços filtrado por barbeiro, montado pelo robô)
   if (k.includes('PROFISSIONAL') && k.includes('SERVICO') && k.includes('FATURADO')) return 'servicos_pro';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
@@ -130,7 +138,7 @@ async function analyze(files, escolhido = {}) {
     const [dy, dm] = months[0].split('-').map(Number);
     throw new Error(`Os arquivos são de ${MONTHS[dm - 1]}/${dy}, mas o mês escolhido é ${MONTHS[em - 1]}/${ey}. Escolha ${MONTHS[dm - 1]}/${dy} ou envie os arquivos do mês certo.`);
   }
-  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens', 'comissoes', 'servicos_pro'].some((k) => reports[k]);
+  const needsMonth = ['servicos', 'assinantes', 'cancelamentos', 'vendas', 'itens', 'comissoes', 'servicos_pro', 'cosmeticos', 'ticket_pro'].some((k) => reports[k]);
   if (!months.length && needsMonth && !(ey && em)) throw new Error('Escolha o mês dos relatórios: Serviços, Vendas, Assinantes, Cancelamentos e Comissões não trazem datas.');
   const [y, m] = months.length ? months[0].split('-').map(Number) : (needsMonth || reports.equipe ? [ey, em] : [null, null]);
   if (y && m) periodos.mes = { de: iso(y, m, 1), ate: iso(y, m, daysInMonth(y, m)), texto: `${MONTHS[m - 1]}/${y}` };
@@ -181,8 +189,9 @@ async function analyze(files, escolhido = {}) {
   let svaTotal = 0; let servTotal = 0;
   for (const r of reports.servicos || []) {
     const nome = r.SERVICO; if (!nome || normalize(nome) === 'TOTAL') continue;
-    const item = { nome, quantidade: money(r['QUANTIDADE REALIZADO']), faturado: money(r.FATURADO), sva: !CORE_SERVICES.includes(normalize(nome)) };
+    // SVA = os serviços do catálogo de SVA (Metas e configurações); estética, manicure etc. ficam em serviços
     const cat = extrasCatalog.find((n) => serviceKey(n) === serviceKey(nome));
+    const item = { nome, quantidade: money(r['QUANTIDADE REALIZADO']), faturado: money(r.FATURADO), sva: !!cat };
     if (cat) item.catalogo = cat;
     servicos.push(item);
     servTotal += item.faturado;
@@ -204,7 +213,14 @@ async function analyze(files, escolhido = {}) {
 
   // ---- produtos vendidos no mês (relatório Vendas): valor real de produtos, que já está dentro das comandas
   let produtos = null;
-  if (reports.vendas) {
+  if (reports.cosmeticos) {
+    // lista exata do CashBarber (só o que ele marca como produto): o que é do bar sai para o bar
+    const itens = reports.cosmeticos.map((r) => ({ nome: r.PRODUTO, quantidade: money(r.QUANTIDADE), valor: money(r.VALOR) })).filter((i) => i.nome && (i.valor || i.quantidade));
+    const barItens = itens.filter((i) => isBarItem(i.nome, barCatalog));
+    const prodItens = itens.filter((i) => !barItens.includes(i)).sort((a, b) => b.valor - a.valor);
+    produtos = { total: round2(prodItens.reduce((s, i) => s + i.valor, 0)), quantidade: prodItens.reduce((s, i) => s + i.quantidade, 0), itens: prodItens, fonte: 'cashbarber' };
+    barVendas = { total: round2(barItens.reduce((s, i) => s + i.valor, 0)), quantidade: barItens.reduce((s, i) => s + i.quantidade, 0), itens: barItens };
+  } else if (reports.vendas) {
     // o relatório Vendas pode trazer serviços junto: produto é só o que não é serviço (relatório de Serviços do
     // mês, serviços já gravados no painel, catálogo de SVA e serviços principais)
     const salvos = await db.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'servicos'", y, m).catch(() => null);
@@ -435,7 +451,28 @@ async function analyze(files, escolhido = {}) {
     visitas = lista;
   }
 
+  // ---- faturamento por profissional do CashBarber (produto, serviço, assinatura)
+  const ticketPro = reports.ticket_pro ? reports.ticket_pro.filter((r) => r.PROFISSIONAL && !/^TOTA/.test(normalize(r.PROFISSIONAL))).map((r) => ({
+    nome_cashbarber: r.PROFISSIONAL, ...resolve(r.PROFISSIONAL),
+    produtos: money(r['FATURAMENTO PRODUTO']), servicos: money(r['FATURAMENTO SERVICO']), assinaturas: money(r['VALOR EM ASSINATURAS']),
+    total: money(r['FATURAMENTO TOTAL']), comandas: money(r['QTDE COMANDAS TOTAL']),
+  })) : null;
+  // ---- planos vendidos (Vendas por origem): plano, valor, data e quem vendeu/indicou
+  const segredoCli = reports.vendas_planos || reports.captacao ? await ensureSecret('radar_secret') : null;
+  const vendasPlanos = reports.vendas_planos ? reports.vendas_planos.filter((r) => r.PLANO).map((r) => {
+    const quem = String(r['QUEM INDICOU?'] || '').trim();
+    const pro = quem ? matchProfessional(quem, pros, dir) : null;
+    const cli = clienteDe(r.CLIENTE, segredoCli);
+    return { vendedor: pro ? pro.name : (quem || null), professional_id: pro?.id || null, cliente: cli.nome, k: cli.chave, plano: r.PLANO, valor: money(r.VALOR), data: brDate(r['DATA DA COMPRA']) };
+  }) : null;
+  // ---- captação: como o cliente conheceu a barbearia, quando se cadastrou e quem indicou
+  const captacao = reports.captacao ? reports.captacao.filter((r) => r.CLIENTE).map((r) => {
+    const cli = clienteDe(r.CLIENTE, segredoCli);
+    return { k: cli.chave, nk: chaveNome(cli.nome, segredoCli), nome: cli.nome, como: String(r['COMO CONHECEU'] || '').trim() || null, cadastro: brDate(r['DATA DE CADASTRO']), indicado: String(r['INDICADO POR'] || '').replace(/\s+-\s+.*$/, '').trim() || null };
+  }).filter((c) => c.cadastro) : null;
+
   return {
+    ticket_pro: ticketPro, vendas_planos: vendasPlanos, captacao,
     comissoes, bruto_pro: brutoPro, visitas,
     unidade: Object.keys(unidade).length ? unidade : null,
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
@@ -461,6 +498,12 @@ function clienteDe(campo, segredo) {
   const base = fone.length >= 10 ? `t:${fone}` : email ? `e:${email}` : nome ? `n:${normalize(nome)}` : '';
   if (!base) return { nome, chave: null };
   return { nome, chave: crypto.createHmac('sha256', segredo).update(base).digest('base64url').slice(0, 16) };
+}
+
+// código pelo nome (para ligar a captação às visitas quando o relatório não traz telefone)
+function chaveNome(nome, segredo) {
+  const n = normalize(nome);
+  return n ? crypto.createHmac('sha256', segredo).update(`n:${n}`).digest('base64url').slice(0, 16) : null;
 }
 
 async function saveReport(q, y, m, kind, data) {
@@ -577,6 +620,18 @@ async function apply(plan) {
       await saveReport(q, y, m, 'comissoes', { ...plan.comissoes, lista, atualizado: new Date().toISOString() });
     }
 
+    if (plan.ticket_pro && y && m) {
+      const lista = [];
+      for (const t of plan.ticket_pro) { const { nome_cashbarber, existente, id, ...v } = t; lista.push({ professional_id: await ensurePro(t), ...v }); }
+      await saveReport(q, y, m, 'ticket_pro', { lista });
+    }
+    if (plan.vendas_planos && y && m) await saveReport(q, y, m, 'vendas_planos', { lista: plan.vendas_planos });
+    // captação: guardada pelo mês do cadastro (um envio com vários meses atualiza cada um)
+    if (plan.captacao?.length) {
+      const porMes = new Map();
+      for (const c of plan.captacao) { const km = c.cadastro.slice(0, 7); if (!porMes.has(km)) porMes.set(km, []); porMes.get(km).push(c); }
+      for (const [km, lista] of porMes) await saveReport(q, Number(km.slice(0, 4)), Number(km.slice(5, 7)), 'captacao', { lista });
+    }
     // visitas do mês para o Radar de clientes (o relatório do mês substitui as visitas daquele mês)
     if (plan.visitas?.length && y && m) {
       const lista = [];

@@ -1018,6 +1018,10 @@ function tipoDoCsv(csv) {
   if (k.includes('ID DA COMANDA') || (k.includes('ID COMANDA') && k.includes('VALOR'))) return 'comandas';
   if (k.includes('PROFISSIONAL') && k.includes('TOTAL LIQUIDO')) return 'comissoes';
   if (k.includes('ORIGEM AGENDAMENTO')) return 'agendamentos';
+  if (k.includes('COMO CONHECEU') && k.includes('DATA DE CADASTRO')) return 'captacao';
+  if (k.includes('QUEM INDICOU?') && k.includes('PLANO')) return 'vendas_planos';
+  if (k.includes('PROFISSIONAL') && k.includes('FATURAMENTO PRODUTO') && k.includes('VALOR EM ASSINATURAS')) return 'ticket_pro';
+  if (k.includes('PRODUTO') && k.includes('QUANTIDADE') && k.includes('VALOR') && !k.includes('PROFISSIONAL')) return 'cosmeticos';
   if (k.includes('QUANTIDADE REALIZADO')) return 'servicos';
   if (k.includes('DATA DE CANCELAMENTO')) return 'cancelamentos';
   if (k.includes('DATA DE CRIACAO') && k.includes('PLANO')) return 'assinantes';
@@ -1133,7 +1137,7 @@ async function main() {
       // modo clientes: só o Histórico de agendamentos (o resto do painel não muda)
       // EXPLORAR=30,11,22 (modo testar): abre só esses relatórios e mostra todas as colunas (nada é enviado)
       const explorar = MODO === 'testar' && process.env.EXPLORAR ? process.env.EXPLORAR.split(/[,\s]+/).filter(Boolean).map((n) => ({ url: /^\//.test(n) ? n : `/relatorio/relatorio${n.padStart(2, '0')}`, nome: `explorar ${n}`, periodo: true })) : null;
-      for (const pg of explorar || (MODO === 'clientes' ? PAGINAS.filter((x) => /relatorio03$/.test(x.url || '')) : PAGINAS)) {
+      for (const pg of explorar || (MODO === 'clientes' ? PAGINAS.filter((x) => /relatorio(03|30)$/.test(x.url || '')) : PAGINAS)) {
         const nome = pg.nome || pg.url;
         try {
           if (pg.comissoes) {
@@ -1224,6 +1228,18 @@ async function main() {
           if (pg.nome?.startsWith('explorar')) log(`    todas as colunas: ${(ex.csv.replace(/^\uFEFF/, '').split(/\r?\n/)[0] || '').replace(/"/g, '')}`);
           resumo.relatorios[nome] = tipo || 'não reconhecido';
           if (tipo && !porTipo[tipo]) porTipo[tipo] = { name: `${tipo}.csv`, text: ex.csv };
+          // Vendas: o CashBarber separa produto (pro_nome) de serviço (ser_nome) na resposta; vira a lista exata de produtos
+          if (/relatorio15$/.test(pg.url || '') && !porTipo.cosmeticos) {
+            const prods = new Map();
+            for (const r of RESP_REL.slice(REL_DESDE).filter((x) => /\/relatorios\/15$/.test(x.caminho))) {
+              for (const x of todasListas(r.json)) if (x.pro_nome) prods.set(`${x.cop_id_produto ?? x.pro_nome}`, [x.pro_nome, Number(x.count ?? 0) || 0, Number(x.total ?? x.sum ?? 0) || 0]);
+            }
+            if (prods.size) {
+              const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+              porTipo.cosmeticos = { name: 'cosmeticos.csv', text: [['PRODUTO', 'QUANTIDADE', 'VALOR'], ...prods.values()].map((l) => l.map(q).join(';')).join('\n') };
+              log(`  ${nome}: + cosméticos e bar (só produtos, da resposta do CashBarber) · ${prods.size} produtos`);
+            }
+          }
         } catch (e) {
           resumo.relatorios[nome] = `erro: ${e.message.slice(0, 300)}`;
           log(`  ${nome}: ERRO — ${e.message}`);
@@ -1244,7 +1260,7 @@ async function main() {
       if (!FILIAL_ID) log('  Código da filial Village não apareceu nas respostas do CashBarber (relatórios que pedem filial podem falhar).');
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
       // envia o que conseguiu; o que faltou fica relatado (cada relatório só substitui a sua parte no painel)
-      const faltam = (MODO === 'clientes' ? ['agendamentos'] : ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe', ...(PAGINAS.some((p) => p.comissoes) ? ['comissoes'] : [])]).filter((t) => !porTipo[t]);
+      const faltam = (MODO === 'clientes' ? ['agendamentos', 'vendas_planos'] : ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe', ...(PAGINAS.some((p) => p.comissoes) ? ['comissoes'] : [])]).filter((t) => !porTipo[t]);
       if (faltam.length) log(`  Não veio desta vez: ${faltam.join(', ')} — essas partes do painel ficam como estavam.`);
       resumo.faltaram = faltam;
       if (!tipos.length) {
@@ -1267,6 +1283,26 @@ async function main() {
         } catch (e) { resumo.envio = `erro: ${e.message}`; relatorioFinal.erros.push(`${resumo.mes} envio: ${e.message}`); log(`  ENVIO FALHOU — ${e.message}`); }
       }
       relatorioFinal.meses.push(resumo);
+    }
+    // modo clientes: a captação de todos os clientes (como conheceram e desde quando são clientes)
+    if (MODO === 'clientes') {
+      try {
+        const h = hojeBrasilia();
+        const desde = process.env.CAPTACAO_DESDE || '2015-01-01';
+        const per = { atalho: null, deIso: desde, ateIso: `${h.ano}-${pad(h.mes)}-${pad(h.dia)}`, deBr: desde.split('-').reverse().join('/'), ateBr: `${pad(h.dia)}/${pad(h.mes)}/${h.ano}` };
+        await page.goto(BASE + '/relatorio/relatorio11', { waitUntil: 'domcontentloaded' });
+        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+        await fecharPropaganda(page);
+        const como = await definirPeriodo(page, per);
+        await conferirDatas(page, per);
+        const f0 = FILA.length; const n0 = NOVAS.length;
+        REL_DESDE = RESP_REL.length;
+        const ex = (await aplicarFiltro(page) ? await aguardarResultado(page, f0, n0) : null) || await exportar(page);
+        if (!ex || tipoDoCsv(ex.csv) !== 'captacao') throw new Error(`não consegui exportar a captação (período ${como || '?'})`);
+        log(`== Captação de clientes desde ${per.deBr}: ${resumoCsv(ex.csv)}`);
+        const r = await enviar({ ano: h.ano, mes: h.mes }, [{ name: 'captacao.csv', text: ex.csv }]);
+        log(`  Painel atualizado com: ${(r.relatorios || []).join(', ')}`);
+      } catch (e) { relatorioFinal.erros.push(`captação: ${e.message}`); log(`  Captação: ERRO — ${e.message}`); }
     }
   } catch (e) {
     relatorioFinal.erros.push(e.message);

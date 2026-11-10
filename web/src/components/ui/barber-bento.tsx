@@ -553,7 +553,7 @@ function ChartTile({ p, accent, reduced }: { p: BarberBentoProps; accent: string
   const isMonth = tab === "Mês";
   const period = isMonth ? p.mensal : p.quinzenas[tab === "1ª Q" ? 0 : 1];
   const days = p.dias.filter((d) => d.dia >= period.inicio && d.dia <= period.termino);
-  const val = (d: BarberDay) => (isMonth ? d.total : d.sva + d.novas_assinaturas);
+  const val = (d: BarberDay) => d.total;
   const uteis = days.filter((d) => d.util).length || 1;
   let acc = 0;
   let u = 0;
@@ -595,7 +595,7 @@ function ChartTile({ p, accent, reduced }: { p: BarberBentoProps; accent: string
 
   return (
     <Tile
-      title={isMonth ? "Faturamento acumulado vs ritmo da meta" : "SVA + assinaturas acumulado vs meta da quinzena"}
+      title={isMonth ? "Faturamento acumulado vs ritmo da meta" : "Faturamento acumulado vs meta da quinzena"}
       className="@xl:col-span-2 @4xl:col-span-2 @4xl:col-start-1 @4xl:row-span-2 @4xl:row-start-2"
       action={<Pills label="Período do gráfico" value={tab} options={["Mês", "1ª Q", "2ª Q"]} onChange={setTab} />}
     >
@@ -754,7 +754,7 @@ function QuinzenaTile({ p, accent, onNavigate }: { p: BarberBentoProps; accent: 
   const totalDias = q.termino - q.inicio + 1;
   const decorridos = Math.max(0, Math.min(totalDias, p.diaApuracao - q.inicio + 1));
   const last10 = p.dias.filter((d) => d.dia >= q.inicio && d.dia <= Math.min(q.termino, p.diaApuracao)).slice(-10);
-  const max = Math.max(...last10.map((d) => d.sva + d.novas_assinaturas), 1);
+  const max = Math.max(...last10.map((d) => d.total), 1);
   const done = q.meta > 0 && q.realizado >= q.meta;
   const tint = (a: number) => `oklch(0.18 0.02 75 / ${a})`;
 
@@ -764,7 +764,7 @@ function QuinzenaTile({ p, accent, onNavigate }: { p: BarberBentoProps; accent: 
       style={{ background: `linear-gradient(160deg, oklch(0.9 0.11 90) 0%, ${accent} 45%, oklch(0.66 0.13 68) 100%)`, color: INK }}
     >
       <header className="flex items-center justify-between">
-        <h3 className="text-[13px] font-semibold opacity-75">{p.quinzenaAtual}ª quinzena · SVA + assinaturas</h3>
+        <h3 className="text-[13px] font-semibold opacity-75">{p.quinzenaAtual}ª quinzena · faturamento total</h3>
         <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold" style={{ background: tint(0.12) }}>
           <span className="size-1.5 rounded-full" style={{ background: INK }} aria-hidden />
           {done ? "Batida" : "Em curso"}
@@ -817,7 +817,7 @@ function QuinzenaTile({ p, accent, onNavigate }: { p: BarberBentoProps; accent: 
               <span
                 key={d.date}
                 className="flex-1 rounded-[4px]"
-                style={{ height: `${Math.max(6, ((d.sva + d.novas_assinaturas) / max) * 100)}%`, background: INK, opacity: 0.14 + (i / last10.length) * 0.55 }}
+                style={{ height: `${Math.max(6, (d.total / max) * 100)}%`, background: INK, opacity: 0.14 + (i / last10.length) * 0.55 }}
               />
             ))
           ) : (

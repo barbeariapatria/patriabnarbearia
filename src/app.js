@@ -11,6 +11,8 @@ const access = require('./access');
 const comissoes = require('./comissoes');
 const metas = require('./metas');
 const radar = require('./radar');
+const pacotes = require('./pacotes');
+const previa = require('./previa');
 const { normalize } = require('./team');
 
 // Prepara o banco uma vez por instância (em serverless, a cada "cold start")
@@ -183,6 +185,36 @@ app.get('/api/radar', auth.requireAuth, (req, res, next) => (access.canPage(req.
   const r = await radar.calcular({ meses, professionalId: own ? req.access.professional_id : null });
   return { ...r, restrito: own };
 }));
+// ---------------------------------------------------------------- Venda de pacotes (planos do clube)
+app.get('/api/pacotes', auth.requireAuth, (req, res, next) => (access.canPage(req.access, 'pacotes') ? next() : deny(res)), wrap(async (req) => {
+  const { y, m } = ym(req.query);
+  const own = access.ownOnly(req.access);
+  const r = await pacotes.calcular(y, m, { professionalId: own ? req.access.professional_id || -1 : null });
+  // cosméticos: lista exata do CashBarber (sem o bar) e quanto cada profissional vendeu
+  const rep = async (kind) => { const row = await db.get('SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = ?', y, m, kind); try { return row ? (typeof row.data === 'string' ? JSON.parse(row.data) : row.data) : null; } catch { return null; } };
+  const [prod, ticket, bruto, bar] = await Promise.all([rep('produtos'), rep('ticket_pro'), rep('bruto_pro'), rep('bar')]);
+  const nomes = Object.fromEntries((await db.all('SELECT id, name FROM professionals')).map((p) => [p.id, p.name]));
+  let porPro = (ticket?.lista || []).map((t) => ({ professional_id: t.professional_id, nome: nomes[t.professional_id] || '?', valor: t.produtos, comandas: t.comandas }));
+  if (!porPro.length) porPro = (bruto?.por_profissional || []).filter((b) => b.produtos != null).map((b) => ({ professional_id: b.professional_id, nome: nomes[b.professional_id] || b.nome, valor: b.produtos }));
+  if (own) porPro = porPro.filter((x) => x.professional_id === req.access.professional_id);
+  porPro.sort((a, b) => b.valor - a.valor);
+  r.cosmeticos = {
+    total: own ? null : prod?.total ?? null, quantidade: own ? null : prod?.quantidade ?? null, fonte: prod?.fonte || null,
+    itens: own ? [] : (prod?.itens || []), por_profissional: porPro, fonte_por_profissional: ticket?.lista?.length ? 'cashbarber' : 'relatorio',
+    bar: own ? null : bar?.total ?? null,
+  };
+  return { ...r, restrito: own };
+}));
+// ---------------------------------------------------------------- Prévia do mês e plano da semana
+app.get('/api/previa', auth.requireAuth, needPros, wrap(async (req) => {
+  const { y, m } = ym(req.query);
+  const own = access.ownOnly(req.access);
+  if (own && !req.access.professional_id) throw new Error('Seu login não está ligado a um profissional');
+  const r = await previa.calcular(y, m, { professionalId: own ? req.access.professional_id : null });
+  // quem não vê os números da barbearia não recebe a previsão da loja
+  if (!access.canShop(req.access)) { r.fechamento = null; r.acoes = []; }
+  return { ...r, restrito: own };
+}));
 // ---------------------------------------------------------------- Metas individuais
 // Barbeiro com "só os próprios números" vê só a dele; o painel de cada um atualiza com o robô (20h)
 app.get('/api/metas-individuais', auth.requireAuth, needPros, wrap(async (req) => {
@@ -195,7 +227,7 @@ app.put('/api/admin/metas-individuais', auth.requireAdmin, wrap(async (req) => {
   const { y, m } = ym(req.body || {});
   const b = req.body || {};
   const conv = (v) => (v === '' || v == null ? '' : webhook.toNumber(v));
-  await metas.salvar({ y, m, base: b.base || null, percentual: b.percentual === '' || b.percentual == null ? null : webhook.toNumber(b.percentual), metas: b.metas ? Object.fromEntries(Object.entries(b.metas).map(([k, v]) => [k, conv(v)])) : null });
+  await metas.salvar({ y, m, base: b.base || null, assinaturas: b.assinaturas ? Object.fromEntries(Object.entries(b.assinaturas).map(([k, v]) => [k, v === '' || v == null ? '' : webhook.toNumber(v)])) : null, percentual: b.percentual === '' || b.percentual == null ? null : webhook.toNumber(b.percentual), metas: b.metas ? Object.fromEntries(Object.entries(b.metas).map(([k, v]) => [k, conv(v)])) : null });
   return { ok: true };
 }));
 // ---------------------------------------------------------------- Comissões (Gestão → Gerar comissões do CashBarber)
@@ -590,7 +622,7 @@ app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
   if (!files.length) throw new Error('Nenhum arquivo recebido');
   let plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
   // robô no modo clientes: grava só as visitas do mês (Radar de clientes); o resto do painel não muda
-  if (req.body.somente === 'clientes') plan = { ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, ignorados: plan.ignorados, visitas: plan.visitas, somente_visitas: true };
+  if (req.body.somente === 'clientes') plan = { ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, ignorados: plan.ignorados, visitas: plan.visitas, captacao: plan.captacao, vendas_planos: plan.vendas_planos, somente_visitas: true };
   const y = plan.ano; const m = plan.mes;
   const ignoradosPorSeguranca = [];
   if (y && m) {

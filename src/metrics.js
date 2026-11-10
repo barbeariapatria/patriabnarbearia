@@ -97,8 +97,9 @@ async function dashboard(y, m) {
   const metaQuinzenal = Number.isFinite(custom.quinzenal) ? custom.quinzenal : settings.meta_quinzenal;
 
   const quinzenaAtual = ref > 15 ? 2 : 1;
-  const q1 = periodSummary(days, 1, 15, ref, metaQuinzenal, 'sva_assinaturas');
-  const q2 = periodSummary(days, 16, last, ref, metaQuinzenal, 'sva_assinaturas');
+  // a meta da quinzena é sobre o faturamento total (a última coluna), não só SVA + assinaturas
+  const q1 = periodSummary(days, 1, 15, ref, metaQuinzenal, 'total');
+  const q2 = periodSummary(days, 16, last, ref, metaQuinzenal, 'total');
   const qTot = (q, f) => round2(days.filter((d) => d.dia >= q.inicio && d.dia <= q.termino).reduce((s, d) => s + d[f], 0));
   for (const q of [q1, q2]) { q.sva = qTot(q, 'sva'); q.assinaturas = qTot(q, 'novas_assinaturas'); q.faturamento = qTot(q, 'total'); }
 

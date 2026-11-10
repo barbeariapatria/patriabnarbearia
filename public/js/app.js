@@ -283,6 +283,7 @@
     { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true, period: true },
     { path: 'comissoes', label: 'Comissões', icon: 'cash', title: 'Comissões', month: true },
     { path: 'clientes', label: 'Radar de clientes', icon: 'eye', title: 'Radar de clientes' },
+    { path: 'pacotes', label: 'Pacotes e cosméticos', icon: 'bag', title: 'Venda de pacotes e cosméticos', month: true },
     { group: 'Administração', admin: true },
     { path: 'admin/importar', label: 'Importar CashBarber', icon: 'download', title: 'Importar relatórios do CashBarber', admin: true },
     { path: 'admin/dados', label: 'Dados do mês', icon: 'db', title: 'Dados do mês', month: true, admin: true },
@@ -526,7 +527,7 @@
         <div class="card hero fade-in">
           ${ring(Q.percentual, `${d.quinzena_atual}ª quinzena`, 132)}
           <div style="flex:1;min-width:0">
-            <div class="eyebrow">SVA + Assinaturas · ${d.quinzena_atual}ª quinzena</div>
+            <div class="eyebrow">Faturamento total · ${d.quinzena_atual}ª quinzena</div>
             <div class="val num" style="font-size:32px">${brl(Q.realizado)}</div>
             <div class="row"><span>Meta <b>${brl(Q.meta)}</b></span><span>Faltam <b>${brl(Q.restante)}</b></span></div>
             <div class="row" style="margin-top:6px"><span>SVA <b>${brl(Q.sva)}</b></span><span>Assinaturas <b>${brl(Q.assinaturas)}</b></span></div>
@@ -824,7 +825,7 @@
     return `<div class="card q-card fade-in ${current ? 'current' : ''}">
       <div class="q-top">
         <div><div class="eyebrow">${n}ª quinzena · dias ${q.inicio} a ${q.termino}</div><div class="q-val num">${brl(q.realizado)}</div>
-          <div class="q-meta">SVA + assinaturas · meta ${brl(q.meta)}</div></div>
+          <div class="q-meta">Faturamento total · meta ${brl(q.meta)}</div></div>
         ${current ? '<span class="badge accent">Em andamento</span>' : done ? `<span class="badge good">${icon('check')} Batida</span>` : `<span class="badge neutral">${q.dia_apuracao >= q.termino ? 'Encerrada' : 'A iniciar'}</span>`}
       </div>
       <div class="progress ${done ? 'good' : ''}"><i data-w="${Math.min(100, q.percentual)}" style="width:0"></i></div>
@@ -856,6 +857,7 @@
   // ============================================================ Faturamento diário
   async function viewDaily(view) {
     const ranged = isRange();
+    const previaP = ranged ? null : api(`/api/previa?ano=${state.y}&mes=${state.m}`).catch((e) => { console.warn('prévia', e); return null; });
     const d = ranged ? await api(`/api/periodo?${periodQS()}`) : await api(`/api/dashboard?ano=${state.y}&mes=${state.m}`);
     const multiYear = ranged && d.de.slice(0, 4) !== d.ate.slice(0, 4);
     const dayLabel = (iso) => (multiYear ? fmtFull(iso).slice(0, 6) + iso.slice(2, 4) : fmtDate(iso));
@@ -865,7 +867,7 @@
     const t = new Date();
     const todayIso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
     $('#pageSub').textContent = admin ? 'Clique nos valores para editar manualmente · salva automaticamente' : 'Somente leitura';
-    view.innerHTML = `
+    view.innerHTML = `${ranged ? '' : '<div id="previaBox"></div>'}
       <div class="grid g-auto">
         ${SERIES.map((s) => `<div class="card kpi fade-in"><div class="top"><div class="ico" style="background:${hexA(cssVar(s.color), 0.16)};color:${cssVar(s.color)}">${icon(s.key === 'produtos' ? 'bag' : s.key === 'servicos' ? 'scissors' : s.key === 'sva' ? 'spark' : s.key === 'recorrencia' ? 'refresh' : s.key === 'bar' ? 'cash' : 'ticket')}</div>${s.label}</div><div class="v num">${brl(d.totais[s.key])}</div><div class="foot">${d.totais.total ? pct((d.totais[s.key] / d.totais.total) * 100) : '0%'} do total</div></div>`).join('')}
         ${kpi({ label: 'Faturamento total', value: brl(d.totais.total), foot: ranged ? `${d.dias_no_periodo} dias · média ${brl(d.media_diaria)}/dia` : `Meta ${brl(d.mensal.meta)} · ${pct(d.mensal.percentual)}`, ic: 'cash', tone: 'accent' })}
@@ -888,6 +890,7 @@
           </table>
         </div>
       </div>`;
+    previaP?.then((p) => { const el = $('#previaBox', view); if (p && el) el.innerHTML = previaHtml(p); });
 
     $('#exportCsv').onclick = () => {
       const rows = [['Data', 'Dia da semana', ...SERIES.map((s) => s.label), 'Status', 'Faturamento total']];
@@ -1235,7 +1238,7 @@
           <div class="field"><label>Nome da unidade</label><input class="input" id="cfUnit" value="${esc(c.unidade)}"></div>
           <div class="form-grid">
             <div class="field"><label>Meta mensal de faturamento (R$)</label><input class="input num" id="cfMM" value="${num2(c.meta_mensal)}" inputmode="decimal"></div>
-            <div class="field"><label>Meta quinzenal SVA + assinaturas (R$)</label><input class="input num" id="cfMQ" value="${num2(c.meta_quinzenal)}" inputmode="decimal"></div>
+            <div class="field"><label>Meta quinzenal — faturamento total (R$)</label><input class="input num" id="cfMQ" value="${num2(c.meta_quinzenal)}" inputmode="decimal"></div>
           </div>
           <div class="field"><label>Dias em que a barbearia não abre</label><div class="chips" id="cfDays"></div></div>
           <div class="field"><label>Feriados e folgas (dias não úteis)</label>
@@ -1277,17 +1280,20 @@
           <label class="muted" style="font-size:13px;display:flex;align-items:center;gap:8px">Acima do melhor mês <input class="cell num" id="miPct" style="width:70px" value="${String(mi.percentual).replace('.', ',')}" inputmode="decimal" aria-label="Percentual acima do melhor mês"> %</label></div>
         <p class="muted" style="margin:0 0 12px;font-size:13px">Meta automática = ${mi.base === 'comissao' ? 'o que o barbeiro mais recebeu de comissão' : 'o melhor faturamento do barbeiro'} entre ${mi.meses_base.join(' e ')} + o percentual, arredondada para cima em R$ 50. Preencha "Meta ajustada" só para mudar a de alguém. Cada barbeiro vê a própria meta em <b>Meu desempenho</b>.</p>
         ${mi.lista.length ? `<div class="table-wrap"><table class="t">
-          <thead><tr><th>Barbeiro</th>${mi.meses_base.map((b) => `<th class="r">${b}</th>`).join('')}<th class="r">Meta automática</th><th class="r">Meta ajustada</th><th class="r">Realizado</th><th class="r">%</th></tr></thead>
+          <thead><tr><th>Barbeiro</th>${mi.meses_base.map((b) => `<th class="r">${b}</th>`).join('')}<th class="r">Meta automática</th><th class="r">Meta ajustada</th><th class="r">Realizado</th><th class="r">%</th><th class="r">Assinaturas (meta)</th><th class="r">Vendidas</th></tr></thead>
           <tbody>${mi.lista.map((x) => `<tr><td><b>${esc(x.nome)}</b></td>${x.historico.map((h) => `<td class="r num">${h.valor ? brl(h.valor) : '—'}</td>`).join('')}
             <td class="r num">${x.automatica ? brl(x.automatica) : '—'}</td>
             <td class="r"><input class="cell num" style="width:120px" data-mi="${x.professional_id}" value="${x.ajustada ? num2(x.meta) : ''}" placeholder="${x.automatica ? num2(x.automatica) : '0,00'}" inputmode="decimal" aria-label="Meta ajustada de ${esc(x.nome)}"></td>
-            <td class="r num">${brl(x.realizado)}</td><td class="r num"><b>${pct(x.percentual)}</b></td></tr>`).join('')}</tbody>
+            <td class="r num">${brl(x.realizado)}</td><td class="r num"><b>${pct(x.percentual)}</b></td>
+            <td class="r"><input class="cell num" style="width:70px" data-mia="${x.professional_id}" value="${x.assinaturas?.ajustada ? x.assinaturas.meta : ''}" placeholder="${x.assinaturas?.automatica ?? '—'}" inputmode="numeric" aria-label="Meta de assinaturas de ${esc(x.nome)}"></td>
+            <td class="r num">${x.assinaturas?.realizado ?? '—'}</td></tr>`).join('')}</tbody>
         </table></div>` : emptyState('Sem barbeiros com histórico', `Não há faturamento em ${mi.meses_base.join(' nem ')} para calcular as metas.`)}
         <button class="btn btn-primary" id="miSave" style="margin-top:14px">${icon('check')} Salvar metas individuais</button>`;
       $('#miBase').onchange = async () => { try { await api('/api/admin/metas-individuais', { method: 'PUT', body: { ano: state.y, mes: state.m, base: $('#miBase').value } }); drawMetasInd(); } catch (e) { toast(e.message, 'err'); } };
       $('#miSave').onclick = async () => {
         const body = { ano: state.y, mes: state.m, base: $('#miBase').value, percentual: $('#miPct').value.trim() === '' ? '' : parseBR($('#miPct').value), metas: {} };
         $$('[data-mi]').forEach((i) => { body.metas[i.dataset.mi] = i.value.trim() === '' ? '' : parseBR(i.value); });
+        body.assinaturas = {}; $$('[data-mia]').forEach((i) => { body.assinaturas[i.dataset.mia] = i.value.trim() === '' ? '' : parseBR(i.value); });
         try { await api('/api/admin/metas-individuais', { method: 'PUT', body }); toast('Metas individuais salvas'); drawMetasInd(); } catch (e) { toast(e.message, 'err'); }
       };
     };
@@ -1302,7 +1308,7 @@
           <div class="month-picker"><button class="btn btn-ghost btn-icon" id="mAnoPrev" aria-label="Ano anterior">${icon('left')}</button><div class="label" style="min-width:70px">${metasAno}</div><button class="btn btn-ghost btn-icon" id="mAnoNext" aria-label="Próximo ano">${icon('right')}</button></div></div>
         <p class="muted" style="margin:0 0 12px;font-size:13px">Deixe em branco para usar a meta padrão (${brl(c.meta_mensal)} no mês · ${brl(c.meta_quinzenal)} na quinzena).</p>
         <div class="table-wrap"><table class="t">
-          <thead><tr><th>Mês</th><th class="r">Meta mensal (faturamento)</th><th class="r">Meta quinzenal (SVA + assinaturas)</th></tr></thead>
+          <thead><tr><th>Mês</th><th class="r">Meta mensal (faturamento)</th><th class="r">Meta quinzenal (faturamento total)</th></tr></thead>
           <tbody>${MONTHS.map((nome, i) => { const v = metasMes[key(i + 1)] || {}; return `<tr><td><b>${nome}</b></td>
             <td class="r"><input class="cell num" style="width:140px" data-meta="${key(i + 1)}" data-f="mensal" value="${v.mensal != null ? num2(v.mensal) : ''}" placeholder="${num2(c.meta_mensal)}" inputmode="decimal" aria-label="Meta mensal ${nome}"></td>
             <td class="r"><input class="cell num" style="width:140px" data-meta="${key(i + 1)}" data-f="quinzenal" value="${v.quinzenal != null ? num2(v.quinzenal) : ''}" placeholder="${num2(c.meta_quinzenal)}" inputmode="decimal" aria-label="Meta quinzenal ${nome}"></td></tr>`; }).join('')}</tbody>
@@ -1568,6 +1574,82 @@
     $('#regras', view)?.addEventListener('click', regras);
   }
 
+  // ============================================================ Prévia do mês e plano da semana
+  function previaBarbeiroHtml(b, aberto = false) {
+    const st = b.percentual >= 100 ? ['good', 'Meta batida'] : b.no_ritmo ? ['good', 'No ritmo'] : ['bad', 'Abaixo do ritmo'];
+    const a = b.assinaturas || {};
+    return `<div class="card fade-in" style="display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:center;gap:10px"><span class="avatar" style="width:34px;height:34px;font-size:12px;background:${proColor(b.professional_id)};color:#fff;border:none">${esc(initials(b.nome))}</span>
+        <div style="flex:1;min-width:0"><b>${esc(b.nome)}</b><div class="muted" style="font-size:12px">Meta ${brl(b.meta)} · ${pct(b.percentual)} feito</div></div><span class="badge ${st[0]}">${st[1]}</span></div>
+      <div class="progress" style="height:8px"><i style="width:${Math.min(100, b.percentual)}%;background:${proColor(b.professional_id)}"></i></div>
+      <div class="muted" style="font-size:12.5px">${b.projecao ? `No ritmo atual fecha em <b style="color:var(--text)">${brl(b.projecao)}</b>` : 'Sem ritmo ainda'}${b.falta ? ` · precisa de <b style="color:var(--text)">${brl(b.por_dia)}</b> por dia` : ''}</div>
+      ${a.meta ? `<div style="font-size:13px">${icon('star')} Assinaturas vendidas: <b>${a.realizado ?? '—'}</b> de ${a.meta}${a.falta ? ` · faltam ${a.falta}` : a.realizado >= a.meta ? ' · batida!' : ''}</div>` : a.realizado != null ? `<div style="font-size:13px">${icon('star')} Assinaturas vendidas no mês: <b>${a.realizado}</b></div>` : ''}
+      ${b.fortes.length ? `<div style="font-size:13px"><b style="color:var(--good)">Onde está bem</b><ul style="margin:4px 0 0 18px;padding:0">${b.fortes.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+      ${b.melhorar.length ? `<div style="font-size:13px"><b style="color:var(--bad)">Onde melhorar</b><ul style="margin:4px 0 0 18px;padding:0">${b.melhorar.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+      ${b.oportunidade ? `<div style="font-size:13px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px">${icon('spark')} <b>Oferta com mais espaço: ${esc(b.oportunidade.servico)}</b><div class="muted" style="font-size:12px">A equipe faz em ${pct(b.oportunidade.equipe_pct)} dos atendimentos; ${b.nome.split(' ')[0]} em ${pct(b.oportunidade.seu_pct)}. No ritmo da equipe seriam ≈ ${b.oportunidade.a_mais} a mais no mês.</div></div>` : ''}
+      ${b.candidatos_clube ? `<div class="muted" style="font-size:12.5px">${b.candidatos_clube} clientes dele vêm com frequência e ainda não são do clube.</div>` : ''}
+      <details ${aberto ? 'open' : ''}><summary style="cursor:pointer;font-size:13px"><b>${b.semana_total} clientes devem voltar nesta semana</b></summary>
+        ${b.semana.length ? `<div class="table-wrap" style="margin-top:8px"><table class="t"><thead><tr><th>Cliente</th><th class="r">Previsto</th><th>O que oferecer</th></tr></thead><tbody>${b.semana.map((c) => `<tr><td>${esc(c.nome)}${c.clube ? ' <span class="badge neutral" style="font-size:10.5px">clube</span>' : ''}</td><td class="r num">${fmtDate(c.previsto)}</td><td style="font-size:12.5px">${esc(c.oferta)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="font-size:12.5px">Nenhum cliente previsto.</p>'}
+      </details>
+    </div>`;
+  }
+  function previaHtml(p) {
+    const F = p.fechamento;
+    return `${F ? `<div class="card fade-in" style="border:1px solid var(--accent);margin-bottom:18px">
+      <div class="card-h"><h3>${icon('trend')} Prévia de ${p.mes_nome}: como vamos fechar</h3><div class="grow"></div>
+        <span class="badge ${F.status === 'abaixo' ? 'bad' : 'good'}">${F.status === 'batida' ? 'Meta batida' : F.status === 'no_ritmo' ? 'No ritmo da meta' : 'Abaixo do ritmo'}</span></div>
+      <div class="grid g-auto" style="gap:10px">
+        ${[['Feito até hoje', brl(F.realizado), `de ${brl(F.meta)}`], ['No ritmo atual fechamos em', brl(F.projecao), F.falta_na_projecao ? `faltariam ${brl(F.falta_na_projecao)}` : 'acima da meta'],
+          ['Por dia para bater a meta', F.restante ? brl(F.restante_por_dia) : '—', `${F.dias_uteis_restantes} dias de trabalho`]]
+          .map(([l, v, f]) => `<div style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:12px 14px"><div class="muted" style="font-size:12px">${l}</div><div class="num" style="font-family:var(--font-display);font-size:22px;font-weight:700">${v}</div><div class="muted" style="font-size:11.5px">${f}</div></div>`).join('')}
+      </div>
+      ${p.acoes.length ? `<h4 style="font-size:14px;margin:16px 0 8px">O que precisamos fazer para fechar a meta</h4>
+        <div class="table-wrap"><table class="t"><thead><tr><th>Frente</th><th class="r">Quanto</th><th>Como</th></tr></thead><tbody>${p.acoes.map((a) => `<tr><td><b>${esc(a.frente)}</b></td><td class="r num">${brl(a.quanto)}</td><td style="font-size:13px">${esc(a.como)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${p.oferta_da_semana ? `<p style="font-size:13px;margin:12px 0 0">${icon('spark')} <b>Mais fácil de oferecer nesta semana:</b> ${esc(p.oferta_da_semana.servico)} (o extra que a equipe mais vende: ${int(p.oferta_da_semana.quantidade_no_mes)} no mês) e o clube para quem já vem 2 vezes ou mais.</p>` : ''}
+    </div>` : ''}
+    ${p.barbeiros.length ? `<div class="card-h" style="margin:0 0 10px"><h3>${icon('users')} Plano da semana por barbeiro · ${fmtDate(p.semana.de)} a ${fmtDate(p.semana.ate)}</h3></div>
+      <div class="grid g-2" style="margin-bottom:18px">${p.barbeiros.map((b) => previaBarbeiroHtml(b, p.barbeiros.length === 1)).join('')}</div>` : ''}`;
+  }
+
+  // ============================================================ Pacotes (planos do clube) e cosméticos
+  async function viewPacotes(view) {
+    const d = await api(`/api/pacotes?ano=${state.y}&mes=${state.m}`);
+    $('#pageSub').textContent = `${d.mes_nome} ${d.ano} · planos vendidos (Vendas por origem) e produtos do CashBarber`;
+    const T = d.total; const A = d.anterior;
+    const varTxt = (a, b) => (b ? `${a >= b ? '+' : ''}${pct(((a - b) / b) * 100)} vs mês anterior` : 'sem comparativo');
+    const C = d.cosmeticos;
+    const maxDia = Math.max(1, ...d.por_dia.map((x) => x.vendas));
+    view.innerHTML = `
+      ${d.tem_dados ? `<div class="grid g-auto">
+        ${kpi({ label: d.restrito ? 'Pacotes que você vendeu' : 'Pacotes vendidos', value: int(T.vendas), foot: A ? varTxt(T.vendas, A.vendas) : '', ic: 'star' })}
+        ${kpi({ label: 'Valor vendido', value: brl(T.valor), foot: A ? varTxt(T.valor, A.valor) : '', ic: 'cash' })}
+        ${kpi({ label: 'Ticket por pacote', value: brl(T.ticket), foot: 'valor médio de cada venda', ic: 'ticket' })}
+        ${!d.restrito && C.total != null ? kpi({ label: 'Cosméticos', value: brl(C.total), foot: `${int(C.quantidade)} produtos vendidos (sem o bar)`, ic: 'bag' }) : ''}
+      </div>
+      <div class="grid g-2" style="margin-top:18px">
+        <div class="card fade-in"><div class="card-h"><h3>${icon('star')} Por pacote</h3></div>
+          ${d.por_plano.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Pacote / plano</th><th class="r">Vendas</th><th class="r">Valor</th></tr></thead><tbody>${d.por_plano.map((x) => `<tr><td><b>${esc(x.nome)}</b></td><td class="r num">${int(x.vendas)}</td><td class="r num">${brl(x.valor)}</td></tr>`).join('')}</tbody></table></div>` : emptyState('Nenhuma venda', 'Sem pacotes vendidos no mês.')}</div>
+        <div class="card fade-in"><div class="card-h"><h3>${icon('users')} Quem vendeu</h3></div>
+          ${d.por_vendedor.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Vendedor / indicação</th><th class="r">Vendas</th><th class="r">Valor</th></tr></thead><tbody>${d.por_vendedor.map((x) => `<tr><td><b>${esc(x.nome)}</b></td><td class="r num">${int(x.vendas)}</td><td class="r num">${brl(x.valor)}</td></tr>`).join('')}</tbody></table></div>` : emptyState('Nenhuma venda', '')}
+          <p class="muted" style="font-size:12px;margin:10px 0 0">"Quem indicou" no CashBarber. Vendas sem ninguém marcado aparecem como "Sem vendedor": marque o barbeiro na venda para contar na meta dele.</p></div>
+      </div>
+      <div class="card fade-in" style="margin-top:18px"><div class="card-h"><h3>${icon('calendar')} Pacotes vendidos por dia</h3></div>
+        <div style="display:flex;align-items:flex-end;gap:3px;height:90px">${d.por_dia.map((x) => `<div title="${fmtDate(x.date)}: ${x.vendas} · ${brl(x.valor)}" style="flex:1;background:${x.vendas ? 'var(--accent)' : 'var(--surface-2)'};height:${Math.max(4, (x.vendas / maxDia) * 100)}%;border-radius:3px"></div>`).join('')}</div>
+        <div class="muted" style="display:flex;justify-content:space-between;font-size:11.5px;margin-top:4px"><span>dia 1</span><span>dia ${d.por_dia.length}</span></div></div>
+      <div class="card fade-in" style="margin-top:18px"><div class="card-h"><h3>${icon('eye')} Vendas do mês</h3></div>
+        ${d.vendas.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Data</th><th>Cliente</th><th>Pacote</th><th>Vendedor</th><th class="r">Valor</th></tr></thead><tbody>${d.vendas.map((v) => `<tr><td class="num">${fmtDate(v.data)}</td><td>${esc(v.cliente || '—')}</td><td>${esc(v.plano)}</td><td>${esc(v.vendedor || 'Sem vendedor')}</td><td class="r num">${brl(v.valor)}</td></tr>`).join('')}</tbody></table></div>` : emptyState('Nenhuma venda', '')}</div>`
+      : `<div class="card">${emptyState(`Sem vendas de pacotes em ${d.mes_nome}`, isAdmin() ? 'As vendas chegam com o robô (relatório Vendas por origem do CashBarber), todo dia às 20h. Para os meses anteriores, rode o robô no modo "clientes".' : 'Os dados chegam com a atualização das 20h.')}</div>`}
+
+      <div class="card fade-in" style="margin-top:18px"><div class="card-h"><h3>${icon('bag')} Cosméticos</h3><div class="grow"></div>${C.fonte === 'cashbarber' ? '<span class="hint">lista do CashBarber</span>' : ''}</div>
+        <div class="grid g-2">
+          <div>${C.por_profissional.length ? `<h4 style="font-size:13.5px;margin:0 0 8px">${d.restrito ? 'Você vendeu' : 'Por profissional'}</h4>
+            <div class="comp-list">${C.por_profissional.map((x) => `<div class="comp-item"><div class="l"><span>${esc(x.nome)}</span><b class="num">${brl(x.valor)}</b></div><div class="bar"><i style="width:${(x.valor / Math.max(1, C.por_profissional[0].valor)) * 100}%;background:${proColor(x.professional_id)}"></i></div></div>`).join('')}</div>
+            <p class="muted" style="font-size:12px;margin:10px 0 0">${C.fonte_por_profissional === 'cashbarber' ? 'Faturamento de produto de cada profissional, igual ao relatório Ticket médio por atendimento do CashBarber.' : 'Produtos vendidos por cada profissional (sem o bar).'}</p>` : '<p class="muted">Sem produtos por profissional no mês.</p>'}</div>
+          <div>${C.itens.length ? `<h4 style="font-size:13.5px;margin:0 0 8px">Produtos vendidos</h4><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="t"><thead><tr><th>Produto</th><th class="r">Qtd.</th><th class="r">Valor</th></tr></thead><tbody>${C.itens.map((i) => `<tr><td>${esc(i.nome)}</td><td class="r num">${int(i.quantidade)}</td><td class="r num">${brl(i.valor)}</td></tr>`).join('')}</tbody></table></div>
+            ${C.bar != null ? `<p class="muted" style="font-size:12px;margin:10px 0 0">Bar no mês: ${brl(C.bar)} (fica fora dos cosméticos e da comissão).</p>` : ''}` : d.restrito ? '' : '<p class="muted">A lista de produtos chega na próxima atualização do robô.</p>'}</div>
+        </div></div>`;
+  }
+
   // ============================================================ Radar de clientes
   let radarMeses = 4;
   const radarFiltro = { status: 'perdido', pro: '', busca: '', limite: 50 };
@@ -1628,6 +1710,19 @@
           <p class="muted" style="font-size:12px;margin:10px 0 0">Depois da primeira visita com o barbeiro no período, quantas vezes o cliente voltou à barbearia.</p></div>
       </div>
 
+      ${r.origem || r.tempo_casa ? `<div class="grid g-2" style="margin-top:18px">
+        ${r.origem ? `<div class="card fade-in"><div class="card-h"><h3>${icon('spark')} De onde vêm os clientes</h3></div>
+          <p class="muted" style="font-size:12.5px;margin:0 0 10px"><b style="color:var(--text)">${int(r.origem.total_novos)}</b> clientes novos cadastrados no período (como conheceram a Pátria):</p>
+          <div class="comp-list">${r.origem.novos.map((o) => `<div class="comp-item"><div class="l"><span>${esc(o.nome)}</span><b class="num">${int(o.n)} · ${pct(r.origem.total_novos ? (o.n / r.origem.total_novos) * 100 : 0)}</b></div><div class="bar"><i style="width:${r.origem.total_novos ? (o.n / r.origem.novos[0].n) * 100 : 0}%;background:var(--accent)"></i></div></div>`).join('') || '<span class="muted">Sem cadastros no período</span>'}</div>
+          ${r.origem.indicacoes.length ? `<p class="muted" style="font-size:12.5px;margin:14px 0 6px">Quem mais indicou clientes novos:</p><div class="chips">${r.origem.indicacoes.map((i) => `<span class="chip">${esc(i.nome)} · ${int(i.n)}</span>`).join('')}</div>` : ''}
+          <p class="muted" style="font-size:12.5px;margin:14px 0 6px">Clientes atendidos no período, pela origem:</p>
+          <div class="chips">${r.origem.atendidos.slice(0, 10).map((o) => `<span class="chip">${esc(o.nome)} · ${int(o.n)}</span>`).join('')}</div></div>` : ''}
+        ${r.tempo_casa ? `<div class="card fade-in"><div class="card-h"><h3>${icon('clock')} Tempo de casa</h3><div class="grow"></div>${r.tempo_casa.media_meses != null ? `<span class="hint">média de ${r.tempo_casa.media_meses} meses</span>` : ''}</div>
+          <div class="table-wrap"><table class="t"><thead><tr><th>Cliente há</th><th class="r">Clientes</th><th class="r">Visitas por cliente</th><th class="r">Não voltaram</th></tr></thead>
+          <tbody>${r.tempo_casa.faixas.map((f) => `<tr><td><b>${f.nome}</b></td><td class="r num">${int(f.clientes)}</td><td class="r num">${String(f.media_visitas).replace('.', ',')}</td><td class="r num" style="color:var(--bad)">${int(f.perdidos)}</td></tr>`).join('')}</tbody></table></div>
+          ${r.tempo_casa.sem_cadastro ? `<p class="muted" style="font-size:12px;margin:10px 0 0">${int(r.tempo_casa.sem_cadastro)} clientes sem data de cadastro encontrada.</p>` : ''}</div>` : ''}
+      </div>` : isAdmin() ? `<div class="banner" style="margin-top:18px">${icon('alert')}<div class="grow">Origem e tempo de casa dos clientes chegam quando o robô rodar no modo <b>clientes</b> (ele traz a captação de clientes do CashBarber).</div></div>` : ''}
+
       <div class="card fade-in" style="margin-top:18px">
         <div class="card-h"><h3>${icon('eye')} Clientes</h3><div class="grow"></div>
           <select class="cell" id="rfStatus" aria-label="Situação"><option value="perdido">Não voltaram (+${r.limites.perdido} dias)</option><option value="risco">Em risco (${r.limites.risco + 1}–${r.limites.perdido} dias)</option><option value="ativo">Ativos</option><option value="">Todos</option></select>
@@ -1644,11 +1739,12 @@
     const desenhar = () => {
       const l = filtrados();
       $('#rfLista').innerHTML = l.length ? `<div class="table-wrap"><table class="t">
-        <thead><tr><th>Cliente</th><th class="r">Visitas</th><th>Com quem veio</th><th>Último barbeiro</th><th class="r">Última visita</th><th class="r">Sem vir há</th><th class="r">Vem a cada</th><th>Situação</th></tr></thead>
+        <thead><tr><th>Cliente</th><th class="r">Visitas</th><th>Com quem veio</th><th>Último barbeiro</th><th class="r">Última visita</th><th class="r">Sem vir há</th><th class="r">Vem a cada</th><th>Origem</th><th class="r">Cliente há</th><th>Situação</th></tr></thead>
         <tbody>${l.slice(0, radarFiltro.limite).map((c) => `<tr><td><b>${esc(c.nome)}</b>${c.clube ? ' <span class="badge neutral" style="font-size:10.5px">clube</span>' : ''}</td>
           <td class="r num">${int(c.visitas)}</td><td style="font-size:12.5px">${c.barbeiros.map((b) => `${esc(b.nome)} (${b.visitas})`).join(', ')}</td>
           <td>${esc(c.ultimo_barbeiro)}</td><td class="r num">${dataCurta(c.ultima)}</td><td class="r num">${c.dias_sem_vir} dias</td>
-          <td class="r num">${c.intervalo_medio == null ? '—' : `${c.intervalo_medio} dias`}</td><td>${badge(c.status)}</td></tr>`).join('')}</tbody>
+          <td class="r num">${c.intervalo_medio == null ? '—' : `${c.intervalo_medio} dias`}</td>
+          <td style="font-size:12.5px">${esc(c.origem || '—')}</td><td class="r num">${c.meses_de_casa == null ? '—' : c.meses_de_casa >= 12 ? `${Math.floor(c.meses_de_casa / 12)} ano${c.meses_de_casa >= 24 ? 's' : ''}` : `${c.meses_de_casa} meses`}</td><td>${badge(c.status)}</td></tr>`).join('')}</tbody>
       </table></div>
       <div style="display:flex;align-items:center;gap:12px;margin-top:10px"><span class="muted" style="font-size:12.5px">${int(Math.min(l.length, radarFiltro.limite))} de ${int(l.length)} clientes</span>${l.length > radarFiltro.limite ? '<button class="btn btn-sm" id="rfMais">Mostrar mais</button>' : ''}</div>`
         : emptyState('Nenhum cliente nesse filtro', 'Troque a situação ou o barbeiro.');
@@ -1662,8 +1758,8 @@
     $('#rfBusca').oninput = (e) => { radarFiltro.busca = e.target.value; radarFiltro.limite = 50; desenhar(); };
     $('#rfCsv').onclick = () => {
       const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const linhas = [['Cliente', 'Clube', 'Visitas', 'Com quem veio', 'Último barbeiro', 'Primeira visita', 'Última visita', 'Dias sem vir', 'Vem a cada (dias)', 'Situação'],
-        ...filtrados().map((c) => [c.nome, c.clube ? 'sim' : 'não', c.visitas, c.barbeiros.map((b) => `${b.nome} (${b.visitas})`).join(', '), c.ultimo_barbeiro, dataCurta(c.primeira), dataCurta(c.ultima), c.dias_sem_vir, c.intervalo_medio ?? '', c.status === 'perdido' ? 'Não voltou' : c.status === 'risco' ? 'Em risco' : 'Ativo'])];
+      const linhas = [['Cliente', 'Clube', 'Visitas', 'Com quem veio', 'Último barbeiro', 'Primeira visita', 'Última visita', 'Dias sem vir', 'Vem a cada (dias)', 'Origem', 'Cliente desde', 'Situação'],
+        ...filtrados().map((c) => [c.nome, c.clube ? 'sim' : 'não', c.visitas, c.barbeiros.map((b) => `${b.nome} (${b.visitas})`).join(', '), c.ultimo_barbeiro, dataCurta(c.primeira), dataCurta(c.ultima), c.dias_sem_vir, c.intervalo_medio ?? '', c.origem || '', dataCurta(c.cadastro), c.status === 'perdido' ? 'Não voltou' : c.status === 'risco' ? 'Em risco' : 'Ativo'])];
       const blob = new Blob(['﻿' + linhas.map((l) => l.map(q).join(';')).join('\n')], { type: 'text/csv;charset=utf-8' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `radar-clientes-${r.ate}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     };
@@ -1679,6 +1775,7 @@
     ['faturamento', 'Faturamento diário', 'Faturamento de cada dia'],
     ['profissionais', 'Profissionais', 'Ranking e comparativo'],
     ['comissoes', 'Comissões', 'Quanto recebe no mês e o PDF (com "só os próprios números", vê só a dele)'],
+    ['pacotes', 'Pacotes e cosméticos', 'Planos vendidos, quem vendeu e produtos (com "só os próprios números", só os dele)'],
     ['clientes', 'Radar de clientes', 'Quem voltou, quando e com quem (com "só os próprios números", só os clientes dele)'],
   ];
 
@@ -2195,12 +2292,14 @@
 
   async function viewMeuPainel(view) {
     const pid = state.access?.professional_id;
-    const [ps, yr, rep, mi] = await Promise.all([
+    const [ps, yr, rep, mi, pv] = await Promise.all([
       api(`/api/profissionais/stats?${periodQS()}`),
       api(`/api/profissionais/ano?ano=${periodYear()}`),
       api(`/api/relatorios?${periodQS()}`).catch(() => null),
       isRange() ? null : api(`/api/metas-individuais?ano=${state.y}&mes=${state.m}`).catch(() => null),
+      isRange() ? null : api(`/api/previa?ano=${state.y}&mes=${state.m}`).catch(() => null),
     ]);
+    const meuPlano = pv?.barbeiros.find((b) => b.professional_id === pid);
     const mt = mi?.lista.find((x) => x.professional_id === pid && x.meta);
     const me = ps.profissionais.find((p) => p.professional_id === pid);
     const nome = state.access.profissional || state.user.name;
@@ -2221,6 +2320,7 @@
     const maxE = Math.max(1, ...extras.map((e) => e[1]));
 
     view.innerHTML = `${mt ? metaCardHtml(mt, mi) : ''}
+      ${meuPlano ? `<div class="card-h" style="margin:18px 0 10px"><h3>${icon('target')} Seu plano da semana</h3></div>${previaBarbeiroHtml(meuPlano, true)}<div style="height:18px"></div>` : ''}
       <div class="card hero fade-in">
         <div class="avatar" style="width:72px;height:72px;font-size:24px;background:${proColor(pid)};color:#fff;border:none">${esc(initials(nome))}</div>
         <div style="flex:1;min-width:0">
@@ -2267,6 +2367,7 @@
     profissionais: viewPros,
     comissoes: viewComissoes,
     clientes: viewRadar,
+    pacotes: viewPacotes,
     'admin/lancamentos': viewAdminLanc,
     'admin/equipe': viewAdminTeam,
     'admin/metas': viewAdminConfig,

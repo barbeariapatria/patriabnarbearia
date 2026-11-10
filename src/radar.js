@@ -37,6 +37,20 @@ async function calcular({ meses = 4, ate = todayIso(), professionalId = null } =
   const clientes = [...porCliente.values()];
   for (const c of clientes) c.visitas.sort((a, b) => a.d.localeCompare(b.d));
 
+  // captação (todos os meses guardados): como conheceu, data de cadastro e quem indicou
+  const capRows = await db.all("SELECT data FROM monthly_reports WHERE kind = 'captacao'");
+  const capK = new Map(); const capN = new Map(); const novosNoPeriodo = [];
+  for (const r of capRows) {
+    let l = []; try { l = (typeof r.data === 'string' ? JSON.parse(r.data) : r.data)?.lista || []; } catch {}
+    for (const c of l) {
+      if (c.k) capK.set(c.k, c);
+      if (c.nome) capN.set(semAcento(c.nome).replace(/\s+/g, ' ').trim(), c);
+      if (c.cadastro >= de && c.cadastro <= ate) novosNoPeriodo.push(c);
+    }
+  }
+  const temCaptacao = capRows.length > 0;
+  for (const c of clientes) c.cap = capK.get(c.k) || capN.get(semAcento(c.nome).replace(/\s+/g, ' ').trim()) || null;
+
   const status = (diasSem) => (diasSem > PERDIDO ? 'perdido' : diasSem > RISCO ? 'risco' : 'ativo');
   const porPro = new Map();
   const pegar = (pid) => {
@@ -90,6 +104,8 @@ async function calcular({ meses = 4, ate = todayIso(), professionalId = null } =
       ultimo_barbeiro: nomePro(ultima.p), ultimo_barbeiro_id: ultima.p,
       barbeiros: Object.entries(contagem).sort((a, b) => b[1] - a[1]).map(([pid, n]) => ({ professional_id: Number(pid), nome: nomePro(Number(pid)), visitas: n })),
       intervalo_medio: intervalos.length ? Math.round(intervalos.reduce((a, b) => a + b, 0) / intervalos.length) : null,
+      origem: c.cap?.como || null, cadastro: c.cap?.cadastro || null, indicado_por: c.cap?.indicado || null,
+      meses_de_casa: c.cap?.cadastro ? Math.max(0, Math.floor(dias(c.cap.cadastro, ate) / 30.4)) : null,
     });
   }
   const barbeiros = [...porPro.values()].filter((p) => p.nome !== '?' && (!professionalId || p.professional_id === professionalId)).map((p) => ({
@@ -101,6 +117,25 @@ async function calcular({ meses = 4, ate = todayIso(), professionalId = null } =
     voltou_com: Object.entries(p.voltou_com).map(([pid, n]) => ({ professional_id: Number(pid), nome: nomePro(Number(pid)), retornos: n, pct: round2((n / p.retornos) * 100) })).sort((a, b) => b.retornos - a.retornos),
   })).sort((a, b) => b.clientes - a.clientes);
   lista.sort((a, b) => b.dias_sem_vir - a.dias_sem_vir);
+
+  // de onde vêm: clientes novos (cadastrados no período) e clientes atendidos, por "como conheceu"
+  const conta = (arr, f) => { const m = new Map(); for (const x of arr) { const k = f(x) || 'Não informado'; m.set(k, (m.get(k) || 0) + 1); } return [...m.entries()].map(([nome, n]) => ({ nome, n })).sort((a, b) => b.n - a.n); };
+  const origem = temCaptacao ? {
+    novos: conta(novosNoPeriodo, (c) => c.como), total_novos: novosNoPeriodo.length,
+    atendidos: conta(lista, (c) => c.origem),
+    indicacoes: conta(novosNoPeriodo.filter((c) => c.indicado), (c) => c.indicado).slice(0, 10),
+  } : null;
+  // tempo de casa dos clientes atendidos no período (pela data de cadastro no CashBarber)
+  const faixas = [['Menos de 3 meses', 0, 2], ['3 a 6 meses', 3, 5], ['6 meses a 1 ano', 6, 11], ['1 a 2 anos', 12, 23], ['Mais de 2 anos', 24, 1e9]];
+  const comCasa = lista.filter((c) => c.meses_de_casa != null);
+  const tempoCasa = temCaptacao ? {
+    faixas: faixas.map(([nome, a, b]) => {
+      const cs = comCasa.filter((c) => c.meses_de_casa >= a && c.meses_de_casa <= b);
+      return { nome, clientes: cs.length, perdidos: cs.filter((c) => c.status === 'perdido').length, media_visitas: cs.length ? round2(cs.reduce((t, c) => t + c.visitas, 0) / cs.length) : 0 };
+    }),
+    sem_cadastro: lista.length - comCasa.length,
+    media_meses: comCasa.length ? Math.round(comCasa.reduce((t, c) => t + c.meses_de_casa, 0) / comCasa.length) : null,
+  } : null;
   return {
     de, ate, meses, meses_com_dados: mesesComDados, limites: { risco: RISCO, perdido: PERDIDO },
     geral: {
@@ -109,7 +144,7 @@ async function calcular({ meses = 4, ate = todayIso(), professionalId = null } =
       tempo_medio_retorno: geral.retornos ? Math.round(geral.retornos_dias / geral.retornos) : null,
       media_visitas: geral.clientes ? round2(geral.visitas / geral.clientes) : 0,
     },
-    barbeiros, clientes: lista,
+    barbeiros, clientes: lista, origem, tempo_casa: tempoCasa,
   };
 }
 

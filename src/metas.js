@@ -4,6 +4,7 @@
 const { db, getSetting, setSetting } = require('./db');
 const { getMonthDays, todayParts, daysInMonth, round2, MONTHS } = require('./metrics');
 const { normalize } = require('./team');
+const { porProfissional: planosPorPro } = require('./pacotes');
 
 const DEFAULTS = { percentual: 20, meses_base: 2, base: 'comissao', ajustes: {} };
 const CAMPO = { comissao: 'comissao', faturamento: 'faturamento_total' };
@@ -48,6 +49,11 @@ async function calcular(y, m) {
   const evoRow = await db.get("SELECT data FROM monthly_reports WHERE year = ? AND month = ? AND kind = 'evolucao'", y, m);
   let evo = {}; try { evo = evoRow ? (typeof evoRow.data === 'string' ? JSON.parse(evoRow.data) : evoRow.data)?.dias || {} : {}; } catch {}
 
+  // assinaturas (planos) vendidas por cada um: meta = melhor dos meses anteriores + o percentual
+  const planosBase = await Promise.all(bases.map((b) => planosPorPro(b.y, b.m)));
+  const planosMes = await planosPorPro(y, m);
+  const ajustesAss = r.ajustes_assinaturas?.[chave(y, m)] || {};
+
   const lista = [];
   for (const p of pros) {
     const historico = bases.map((b) => ({ ano: b.y, mes: b.m, nome: MONTHS[b.m - 1], valor: fat(p.id, b) }));
@@ -70,6 +76,15 @@ async function calcular(y, m) {
       por_dia: falta ? round2(falta / Math.max(1, uteisRestantes)) : 0,
       esperado_ate_hoje: esperado, no_ritmo: realizado >= esperado, projecao,
       // cada ponto guarda { f: faturamento, c: comissão } (pontos antigos: só o faturamento)
+      assinaturas: (() => {
+        const hist = planosBase.map((pb, i) => ({ nome: MONTHS[bases[i].m - 1], valor: pb.tem_dados ? pb.por_pro[p.id] || 0 : null }));
+        const melhorA = Math.max(0, ...hist.map((h) => h.valor || 0));
+        const auto = melhorA ? Math.ceil(melhorA * (1 + pct / 100)) : null;
+        const metaA = ajustesAss[p.id] != null ? Number(ajustesAss[p.id]) : auto;
+        const feitas = planosMes.tem_dados ? planosMes.por_pro[p.id] || 0 : null;
+        return { historico: hist, automatica: auto, meta: metaA, ajustada: ajustesAss[p.id] != null, realizado: feitas,
+          percentual: metaA && feitas != null ? round2((feitas / metaA) * 100) : null, falta: metaA && feitas != null ? Math.max(0, metaA - feitas) : null };
+      })(),
       evolucao: Object.entries(evo).sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => { const x = v?.[p.id]; const o = typeof x === 'object' && x ? x : { f: Number(x) || 0 }; return { date, valor: Number(base === 'comissao' ? o.c : o.f) || 0 }; })
         .filter((e) => base !== 'comissao' || Object.values(evo[e.date] || {}).some((x) => typeof x === 'object')),
     });
@@ -97,8 +112,16 @@ async function registrarEvolucao(q, y, m) {
     ON CONFLICT(year, month, kind) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`, y, m, JSON.stringify({ dias }));
 }
 
-async function salvar({ y, m, percentual, metas, base }) {
+async function salvar({ y, m, percentual, metas, base, assinaturas }) {
   const r = await regras();
+  if (assinaturas && typeof assinaturas === 'object') {
+    const mes = { ...(r.ajustes_assinaturas?.[chave(y, m)] || {}) };
+    for (const [pid, v] of Object.entries(assinaturas)) {
+      if (v === '' || v == null) delete mes[Number(pid)];
+      else { const n = Math.round(Number(v)); if (!(n >= 0)) throw new Error('Meta de assinaturas inválida'); mes[Number(pid)] = n; }
+    }
+    r.ajustes_assinaturas = { ...(r.ajustes_assinaturas || {}), [chave(y, m)]: mes };
+  }
   if (base) { if (!CAMPO[base]) throw new Error('Base inválida'); r.base = base; }
   if (percentual != null && percentual !== '') {
     const p = Number(percentual);
