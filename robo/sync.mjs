@@ -1300,6 +1300,9 @@ async function main() {
         const ex = (await aplicarFiltro(page) ? await aguardarResultado(page, f0, n0) : null) || await exportar(page);
         if (!ex || tipoDoCsv(ex.csv) !== 'captacao') throw new Error(`não consegui exportar a captação (período ${como || '?'})`);
         log(`== Captação de clientes desde ${per.deBr}: ${resumoCsv(ex.csv)}`);
+        // formato da data de cadastro (só o desenho: dígitos viram 9), para conferir a leitura
+        { const ls = ex.csv.replace(/^\uFEFF/, '').split(/\r?\n/); const cab = ls[0].split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/).map((c) => norm(c.replace(/"/g, ''))); const i = cab.indexOf('data de cadastro');
+          log(`  formato da data: ${ls.slice(1, 4).map((l) => (l.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/)[i] || '').replace(/"/g, '').replace(/\d/g, '9').replace(/[A-Za-zÀ-ÿ]/g, 'a')).join(' | ')} · separador: ${ls[0].includes(';') ? ';' : ','}`); }
         const r = await enviar({ ano: h.ano, mes: h.mes }, [{ name: 'captacao.csv', text: ex.csv }]);
         log(`  Painel atualizado com: ${(r.relatorios || []).join(', ')}`);
       } catch (e) { relatorioFinal.erros.push(`captação: ${e.message}`); log(`  Captação: ERRO — ${e.message}`); }
