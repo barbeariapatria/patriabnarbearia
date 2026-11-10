@@ -1300,9 +1300,11 @@ async function main() {
         const ex = (await aplicarFiltro(page) ? await aguardarResultado(page, f0, n0) : null) || await exportar(page);
         if (!ex || tipoDoCsv(ex.csv) !== 'captacao') throw new Error(`não consegui exportar a captação (período ${como || '?'})`);
         log(`== Captação de clientes desde ${per.deBr}: ${resumoCsv(ex.csv)}`);
-        // formato da data de cadastro (só o desenho: dígitos viram 9), para conferir a leitura
-        { const ls = ex.csv.replace(/^\uFEFF/, '').split(/\r?\n/); const cab = ls[0].split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/).map((c) => norm(c.replace(/"/g, ''))); const i = cab.indexOf('data de cadastro');
-          log(`  formato da data: ${ls.slice(1, 4).map((l) => (l.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/)[i] || '').replace(/"/g, '').replace(/\d/g, '9').replace(/[A-Za-zÀ-ÿ]/g, 'a')).join(' | ')} · separador: ${ls[0].includes(';') ? ';' : ','}`); }
+        // formatos da data de cadastro (só o desenho: dígitos viram 9; mês > 12 marcado), para conferir a leitura
+        { const ls = ex.csv.replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.trim()); const sep = (l) => l.split(/[;,](?=(?:[^"]*"[^"]*")*[^"]*$)/).map((c) => c.replace(/^"|"$/g, ''));
+          const cab = sep(ls[0]).map((c) => norm(c)); const i = cab.indexOf('data de cadastro'); const formas = {};
+          for (const l of ls.slice(1)) { const v = sep(l)[i] || ''; const m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); const k = `${v.replace(/\d/g, '9')}${m ? (Number(m[2]) > 12 ? ' (2º>12)' : '') + (Number(m[3]) > 12 ? ' (3º>12)' : '') : ''} · colunas ${sep(l).length}`; formas[k] = (formas[k] || 0) + 1; }
+          log(`  formatos da data: ${Object.entries(formas).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([k, n]) => `${k}: ${n}`).join(' | ')}`); }
         const r = await enviar({ ano: h.ano, mes: h.mes }, [{ name: 'captacao.csv', text: ex.csv }]);
         log(`  Painel atualizado com: ${(r.relatorios || []).join(', ')}`);
       } catch (e) { relatorioFinal.erros.push(`captação: ${e.message}`); log(`  Captação: ERRO — ${e.message}`); }
