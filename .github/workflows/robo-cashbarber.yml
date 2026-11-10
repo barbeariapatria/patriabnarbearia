@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       modo:
-        description: "sincronizar = importa no painel · testar = só exporta e confere · mapear = levanta as páginas do CashBarber"
+        description: "sincronizar = importa no painel · testar = só exporta e confere · mapear = levanta as páginas do CashBarber · clientes = traz os agendamentos dos últimos 5 meses para o Radar de clientes"
         type: choice
-        options: [sincronizar, testar, mapear]
+        options: [sincronizar, testar, mapear, clientes]
         default: sincronizar
       mes:
         description: "Mês específico (AAAA-MM). Vazio = mês corrente (no dia 1º, também o anterior)"

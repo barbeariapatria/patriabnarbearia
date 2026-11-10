@@ -282,6 +282,7 @@
     { path: 'faturamento', label: 'Faturamento diário', icon: 'calendar', title: 'Faturamento por dia', month: true, period: true },
     { path: 'profissionais', label: 'Profissionais', icon: 'users', title: 'Análise de profissionais', month: true, period: true },
     { path: 'comissoes', label: 'Comissões', icon: 'cash', title: 'Comissões', month: true },
+    { path: 'clientes', label: 'Radar de clientes', icon: 'eye', title: 'Radar de clientes' },
     { group: 'Administração', admin: true },
     { path: 'admin/importar', label: 'Importar CashBarber', icon: 'download', title: 'Importar relatórios do CashBarber', admin: true },
     { path: 'admin/dados', label: 'Dados do mês', icon: 'db', title: 'Dados do mês', month: true, admin: true },
@@ -1567,6 +1568,108 @@
     $('#regras', view)?.addEventListener('click', regras);
   }
 
+  // ============================================================ Radar de clientes
+  let radarMeses = 4;
+  const radarFiltro = { status: 'perdido', pro: '', busca: '', limite: 50 };
+  const dataCurta = (d) => (d ? d.split('-').reverse().join('/') : '—');
+  async function viewRadar(view) {
+    const r = await api(`/api/radar?meses=${radarMeses}`);
+    $('#pageSub').textContent = `${dataCurta(r.de)} a ${dataCurta(r.ate)} · agendamentos finalizados do CashBarber`;
+    const G = r.restrito && r.barbeiros[0] ? (() => { const b = r.barbeiros[0]; return { clientes: b.clientes, visitas: b.visitas, taxa_retorno: b.taxa_retorno, tempo_medio_retorno: b.tempo_medio_retorno, risco: b.risco, perdidos: b.perdidos, media_visitas: b.media_visitas }; })() : r.geral;
+    const seletor = `<div class="seg" role="group" aria-label="Período">${[3, 4, 6].map((n) => `<button class="btn btn-sm ${n === radarMeses ? 'btn-primary' : ''}" data-meses="${n}">${n} meses</button>`).join(' ')}</div>`;
+    if (!r.clientes.length) {
+      view.innerHTML = `<div class="card fade-in"><div class="card-h"><h3>${icon('eye')} Radar de clientes</h3><div class="grow"></div>${seletor}</div>
+        ${emptyState('Ainda sem visitas no período', isAdmin() ? 'O radar usa os agendamentos finalizados de cada mês. Rode o robô no modo "clientes" (GitHub → Actions → Robô CashBarber → Run workflow → modo clientes) para trazer os últimos meses. Depois disso ele atualiza sozinho todo dia às 20h.' : 'Os dados chegam com a atualização das 20h.')}</div>`;
+      $$('[data-meses]', view).forEach((b) => b.onclick = () => { radarMeses = Number(b.dataset.meses); route(); });
+      return;
+    }
+    const pctTxt = (v) => (v == null ? '—' : pct(v));
+    const diasTxt = (v) => (v == null ? '—' : `${v} dias`);
+    const nomes = r.barbeiros.map((b) => ({ id: b.professional_id, nome: b.nome }));
+    const todosPros = [...new Map([...nomes, ...r.barbeiros.flatMap((b) => b.voltou_com.map((v) => ({ id: v.professional_id, nome: v.nome })))].map((x) => [x.id, x])).values()];
+    view.innerHTML = `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">${seletor}</div>
+      <div class="grid g-auto">
+        ${kpi({ label: r.restrito ? 'Seus clientes' : 'Clientes atendidos', value: int(G.clientes), foot: `${int(G.visitas)} visitas · ${String(G.media_visitas).replace('.', ',')} por cliente`, ic: 'users' })}
+        ${kpi({ label: 'Voltaram', value: pctTxt(G.taxa_retorno), foot: 'vieram de novo no período', ic: 'refresh' })}
+        ${kpi({ label: 'Voltam em média em', value: diasTxt(G.tempo_medio_retorno), foot: 'entre uma visita e a próxima', ic: 'clock' })}
+        ${kpi({ label: 'Em risco', value: int(G.risco), foot: `${r.limites.risco + 1} a ${r.limites.perdido} dias sem vir`, ic: 'alert', tone: 'warn' })}
+        ${kpi({ label: 'Não voltaram mais', value: int(G.perdidos), foot: `mais de ${r.limites.perdido} dias sem vir`, ic: 'x', tone: 'bad' })}
+      </div>
+
+      <div class="card fade-in" style="margin-top:18px">
+        <div class="card-h"><h3>${icon('users')} ${r.restrito ? 'Seus clientes' : 'Clientes por barbeiro'}</h3></div>
+        <div class="table-wrap"><table class="t">
+          <thead><tr><th>Barbeiro</th><th class="r">Clientes</th><th class="r">Visitas</th><th class="r">Média de visitas</th><th class="r">Voltaram</th><th class="r">Voltam em</th><th class="r">Voltam com ele</th><th class="r">Em risco</th><th class="r">Não voltaram</th></tr></thead>
+          <tbody>${r.barbeiros.map((b) => `<tr>
+            <td><span style="display:inline-flex;align-items:center;gap:10px"><span class="avatar" style="width:28px;height:28px;font-size:11px;background:${proColor(b.professional_id)};color:#fff;border:none">${esc(initials(b.nome))}</span><b>${esc(b.nome)}</b></span></td>
+            <td class="r num">${int(b.clientes)}</td><td class="r num">${int(b.visitas)}</td><td class="r num">${String(b.media_visitas).replace('.', ',')}</td>
+            <td class="r num"><b>${pctTxt(b.taxa_retorno)}</b><div class="muted" style="font-size:11.5px">${int(b.voltaram)} clientes</div></td>
+            <td class="r num">${diasTxt(b.tempo_medio_retorno)}</td>
+            <td class="r num">${pctTxt(b.fidelidade)}</td>
+            <td class="r num" style="color:var(--warn, #e0a33a)">${int(b.risco)}</td>
+            <td class="r num" style="color:var(--bad)"><b>${int(b.perdidos)}</b></td></tr>`).join('')}</tbody>
+        </table></div>
+        <p class="muted" style="font-size:12px;margin:10px 0 0">Voltaram = vieram de novo depois da primeira visita com ele (com qualquer barbeiro). Voltam com ele = das vezes que o cliente voltou, quantas foram com o mesmo barbeiro. Não voltaram = a última visita foi com ele e o cliente não apareceu mais há mais de ${r.limites.perdido} dias.</p>
+      </div>
+
+      <div class="grid g-2" style="margin-top:18px">
+        <div class="card fade-in"><div class="card-h"><h3>${icon('refresh')} Com quem o cliente voltou</h3></div>
+          <div class="table-wrap"><table class="t">
+            <thead><tr><th>Atendeu ↓ · voltou com →</th>${todosPros.map((p) => `<th class="r">${esc(p.nome)}</th>`).join('')}</tr></thead>
+            <tbody>${r.barbeiros.map((b) => `<tr><td><b>${esc(b.nome)}</b></td>${todosPros.map((p) => { const v = b.voltou_com.find((x) => x.professional_id === p.id); const mesmo = p.id === b.professional_id; return `<td class="r num" style="${mesmo ? 'background:var(--accent-soft, rgba(212,166,74,.14))' : ''}">${v ? `<b>${int(v.retornos)}</b><div class="muted" style="font-size:11px">${pct(v.pct)}</div>` : '<span class="muted">—</span>'}</td>`; }).join('')}</tr>`).join('')}</tbody>
+          </table></div>
+          <p class="muted" style="font-size:12px;margin:10px 0 0">Cada retorno conta uma vez: a visita seguinte do cliente. Em destaque, quando voltou com o mesmo barbeiro.</p></div>
+        <div class="card fade-in"><div class="card-h"><h3>${icon('trend')} Quantas vezes voltaram</h3></div>
+          <div class="table-wrap"><table class="t">
+            <thead><tr><th>Barbeiro</th><th class="r">Não voltou</th><th class="r">1 vez</th><th class="r">2 vezes</th><th class="r">3 vezes</th><th class="r">4 ou mais</th></tr></thead>
+            <tbody>${r.barbeiros.map((b) => `<tr><td><b>${esc(b.nome)}</b></td>${[0, 1, 2, 3, '4+'].map((k) => `<td class="r num">${int(b.vezes[k])}<div class="muted" style="font-size:11px">${pct(b.clientes ? (b.vezes[k] / b.clientes) * 100 : 0)}</div></td>`).join('')}</tr>`).join('')}</tbody>
+          </table></div>
+          <p class="muted" style="font-size:12px;margin:10px 0 0">Depois da primeira visita com o barbeiro no período, quantas vezes o cliente voltou à barbearia.</p></div>
+      </div>
+
+      <div class="card fade-in" style="margin-top:18px">
+        <div class="card-h"><h3>${icon('eye')} Clientes</h3><div class="grow"></div>
+          <select class="cell" id="rfStatus" aria-label="Situação"><option value="perdido">Não voltaram (+${r.limites.perdido} dias)</option><option value="risco">Em risco (${r.limites.risco + 1}–${r.limites.perdido} dias)</option><option value="ativo">Ativos</option><option value="">Todos</option></select>
+          ${r.restrito ? '' : `<select class="cell" id="rfPro" aria-label="Barbeiro"><option value="">Todos os barbeiros</option>${r.barbeiros.map((b) => `<option value="${b.professional_id}">Último com ${esc(b.nome)}</option>`).join('')}</select>`}
+          <input class="cell" id="rfBusca" placeholder="Buscar cliente" aria-label="Buscar cliente" style="width:170px">
+          <button class="btn btn-sm" id="rfCsv">${icon('download')} CSV</button></div>
+        <div id="rfLista"></div>
+      </div>`;
+    $$('[data-meses]', view).forEach((b) => b.onclick = () => { radarMeses = Number(b.dataset.meses); route(); });
+    const filtrados = () => r.clientes.filter((c) => (!radarFiltro.status || c.status === radarFiltro.status)
+      && (!radarFiltro.pro || c.ultimo_barbeiro_id === Number(radarFiltro.pro))
+      && (!radarFiltro.busca || c.nome.toLowerCase().includes(radarFiltro.busca.toLowerCase())));
+    const badge = (st) => (st === 'perdido' ? '<span class="badge bad">Não voltou</span>' : st === 'risco' ? '<span class="badge warn" style="background:rgba(224,163,58,.15);color:#e0a33a">Em risco</span>' : '<span class="badge good">Ativo</span>');
+    const desenhar = () => {
+      const l = filtrados();
+      $('#rfLista').innerHTML = l.length ? `<div class="table-wrap"><table class="t">
+        <thead><tr><th>Cliente</th><th class="r">Visitas</th><th>Com quem veio</th><th>Último barbeiro</th><th class="r">Última visita</th><th class="r">Sem vir há</th><th class="r">Vem a cada</th><th>Situação</th></tr></thead>
+        <tbody>${l.slice(0, radarFiltro.limite).map((c) => `<tr><td><b>${esc(c.nome)}</b>${c.clube ? ' <span class="badge neutral" style="font-size:10.5px">clube</span>' : ''}</td>
+          <td class="r num">${int(c.visitas)}</td><td style="font-size:12.5px">${c.barbeiros.map((b) => `${esc(b.nome)} (${b.visitas})`).join(', ')}</td>
+          <td>${esc(c.ultimo_barbeiro)}</td><td class="r num">${dataCurta(c.ultima)}</td><td class="r num">${c.dias_sem_vir} dias</td>
+          <td class="r num">${c.intervalo_medio == null ? '—' : `${c.intervalo_medio} dias`}</td><td>${badge(c.status)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:10px"><span class="muted" style="font-size:12.5px">${int(Math.min(l.length, radarFiltro.limite))} de ${int(l.length)} clientes</span>${l.length > radarFiltro.limite ? '<button class="btn btn-sm" id="rfMais">Mostrar mais</button>' : ''}</div>`
+        : emptyState('Nenhum cliente nesse filtro', 'Troque a situação ou o barbeiro.');
+      $('#rfMais')?.addEventListener('click', () => { radarFiltro.limite += 100; desenhar(); });
+    };
+    $('#rfStatus').value = radarFiltro.status;
+    if ($('#rfPro')) $('#rfPro').value = radarFiltro.pro;
+    $('#rfBusca').value = radarFiltro.busca;
+    $('#rfStatus').onchange = (e) => { radarFiltro.status = e.target.value; radarFiltro.limite = 50; desenhar(); };
+    $('#rfPro')?.addEventListener('change', (e) => { radarFiltro.pro = e.target.value; radarFiltro.limite = 50; desenhar(); });
+    $('#rfBusca').oninput = (e) => { radarFiltro.busca = e.target.value; radarFiltro.limite = 50; desenhar(); };
+    $('#rfCsv').onclick = () => {
+      const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const linhas = [['Cliente', 'Clube', 'Visitas', 'Com quem veio', 'Último barbeiro', 'Primeira visita', 'Última visita', 'Dias sem vir', 'Vem a cada (dias)', 'Situação'],
+        ...filtrados().map((c) => [c.nome, c.clube ? 'sim' : 'não', c.visitas, c.barbeiros.map((b) => `${b.nome} (${b.visitas})`).join(', '), c.ultimo_barbeiro, dataCurta(c.primeira), dataCurta(c.ultima), c.dias_sem_vir, c.intervalo_medio ?? '', c.status === 'perdido' ? 'Não voltou' : c.status === 'risco' ? 'Em risco' : 'Ativo'])];
+      const blob = new Blob(['﻿' + linhas.map((l) => l.map(q).join(';')).join('\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `radar-clientes-${r.ate}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    };
+    desenhar();
+  }
+
   // ============================================================ Admin · Usuários
   // Telas que o dono pode liberar para cada login
   const PERM_PAGES = [
@@ -1576,6 +1679,7 @@
     ['faturamento', 'Faturamento diário', 'Faturamento de cada dia'],
     ['profissionais', 'Profissionais', 'Ranking e comparativo'],
     ['comissoes', 'Comissões', 'Quanto recebe no mês e o PDF (com "só os próprios números", vê só a dele)'],
+    ['clientes', 'Radar de clientes', 'Quem voltou, quando e com quem (com "só os próprios números", só os clientes dele)'],
   ];
 
   async function viewAdminUsers(view) {
@@ -2162,6 +2266,7 @@
     faturamento: viewDaily,
     profissionais: viewPros,
     comissoes: viewComissoes,
+    clientes: viewRadar,
     'admin/lancamentos': viewAdminLanc,
     'admin/equipe': viewAdminTeam,
     'admin/metas': viewAdminConfig,

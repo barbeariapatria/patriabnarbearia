@@ -6,6 +6,7 @@
 //   CASHBARBER_URL                          endereço do sistema (padrão: https://painel.cashbarber.com.br)
 //   PAINEL_URL, IMPORT_TOKEN                painel na Vercel e o token cadastrado lá
 //   MODO      sincronizar (padrão) | testar (exporta e confere, sem enviar) | mapear (só levanta as páginas)
+//             | clientes (só os agendamentos dos últimos MESES_CLIENTES meses, padrão 5, para o Radar de clientes)
 //   MES       AAAA-MM para forçar um mês (padrão: mês corrente; no dia 1º também o mês anterior)
 //
 // O repositório é público: este script NUNCA imprime nem salva dados de clientes. Os logs mostram só nomes de
@@ -35,6 +36,11 @@ function hojeBrasilia() {
   return { ano: Number(p.year), mes: Number(p.month), dia: Number(p.day) };
 }
 function mesesParaImportar() {
+  // modo clientes: os últimos meses (radar de clientes), MESES_CLIENTES contando o atual
+  if (MODO === 'clientes' && !process.env.MES) {
+    const h = hojeBrasilia(); const n = Math.min(12, Math.max(1, Number(process.env.MESES_CLIENTES) || 5));
+    return Array.from({ length: n }, (_, i) => { let ano = h.ano; let mes = h.mes - (n - 1 - i); while (mes < 1) { mes += 12; ano--; } return { ano, mes }; });
+  }
   if (process.env.MES) {
     const [ano, mes] = process.env.MES.split('-').map(Number);
     if (!ano || !mes || mes > 12) throw new Error(`MES inválido: ${process.env.MES} (use AAAA-MM)`);
@@ -1050,7 +1056,7 @@ async function enviar(mes, files) {
   const url = (process.env.PAINEL_URL || '').replace(/\/+$/, '');
   if (!url || !process.env.IMPORT_TOKEN) throw new Error('Faltam PAINEL_URL e/ou IMPORT_TOKEN.');
   // SUBSTITUIR=1: troca o mês mesmo com total bem diferente do atual · MANTER_ASSINANTES=1: não mexe na base de assinantes
-  const corpo = JSON.stringify({ ano: mes.ano, mes: mes.mes, files, forcar: process.env.SUBSTITUIR === '1' || process.env.SUBSTITUIR === 'true', manter_assinantes: process.env.MANTER_ASSINANTES === '1' || process.env.MANTER_ASSINANTES === 'true' });
+  const corpo = JSON.stringify({ ano: mes.ano, mes: mes.mes, files, somente: MODO === 'clientes' ? 'clientes' : undefined, forcar: process.env.SUBSTITUIR === '1' || process.env.SUBSTITUIR === 'true', manter_assinantes: process.env.MANTER_ASSINANTES === '1' || process.env.MANTER_ASSINANTES === 'true' });
   if (corpo.length > 4 * 1024 * 1024) throw new Error(`Os relatórios somam ${(corpo.length / 1048576).toFixed(1)} MB; o painel aceita até 4 MB por envio.`);
   const r = await fetch(`${url}/api/robo/importar`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-import-token': process.env.IMPORT_TOKEN.trim() }, body: corpo,
@@ -1109,7 +1115,7 @@ async function main() {
   page.on('dialog', (d) => d.dismiss().catch(() => {})); // nunca confirma diálogos (exclusões etc.)
   const relatorioFinal = { quando: new Date().toISOString(), modo: MODO, meses: [], erros: [] };
   try {
-    if (MODO === 'sincronizar') await verificarPainel();
+    if (MODO === 'sincronizar' || MODO === 'clientes') await verificarPainel();
     await entrar(page);
     if (MODO === 'mapear') {
       const paginas = await catalogo(page);
@@ -1124,7 +1130,8 @@ async function main() {
       if (process.env.SUBSTITUIR === 'true' || process.env.SUBSTITUIR === '1') log('  Opção: substituir os dados do mês');
       if (process.env.MANTER_ASSINANTES === 'true' || process.env.MANTER_ASSINANTES === '1') log('  Opção: não mexer na base de assinantes');
       const porTipo = {}; const resumo = { mes: `${mes.ano}-${pad(mes.mes)}`, relatorios: {} };
-      for (const pg of PAGINAS) {
+      // modo clientes: só o Histórico de agendamentos (o resto do painel não muda)
+      for (const pg of MODO === 'clientes' ? PAGINAS.filter((x) => /relatorio03$/.test(x.url || '')) : PAGINAS) {
         const nome = pg.nome || pg.url;
         try {
           if (pg.comissoes) {
@@ -1221,7 +1228,7 @@ async function main() {
         for (const p of ctx.pages()) if (p !== page) await p.close().catch(() => {});
       }
       // Serviços e produtos de cada barbeiro (precisa da equipe, que é a última página)
-      const equipeAtiva = equipeDoCsv(porTipo.equipe?.text);
+      const equipeAtiva = MODO === 'clientes' ? [] : equipeDoCsv(porTipo.equipe?.text);
       if (equipeAtiva.length && (MODELOS['10'] || MODELOS['15'])) {
         try {
           const pb = await porBarbeiro(ctx, equipeAtiva, FILIAL_ID);
@@ -1234,7 +1241,7 @@ async function main() {
       if (!FILIAL_ID) log('  Código da filial Village não apareceu nas respostas do CashBarber (relatórios que pedem filial podem falhar).');
       log(`  Arquivos para o painel: ${tipos.join(', ') || '(nenhum)'}`);
       // envia o que conseguiu; o que faltou fica relatado (cada relatório só substitui a sua parte no painel)
-      const faltam = ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe', ...(PAGINAS.some((p) => p.comissoes) ? ['comissoes'] : [])].filter((t) => !porTipo[t]);
+      const faltam = (MODO === 'clientes' ? ['agendamentos'] : ['comandas', 'vendas', 'agendamentos', 'servicos', 'assinantes', 'cancelamentos', 'equipe', ...(PAGINAS.some((p) => p.comissoes) ? ['comissoes'] : [])]).filter((t) => !porTipo[t]);
       if (faltam.length) log(`  Não veio desta vez: ${faltam.join(', ')} — essas partes do painel ficam como estavam.`);
       resumo.faltaram = faltam;
       if (!tipos.length) {

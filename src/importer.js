@@ -8,7 +8,8 @@
 //   - Vendas:        "Item" (ou "Nome"), "Quantidade", "Valor" (produtos vendidos no mês — relatório Financeiro → Vendas)
 // Os valores por dia vêm das comandas; a divisão entre serviços, SVA e produtos usa a proporção do relatório de serviços.
 // Dados pessoais dos clientes (nome, telefone, e-mail) são lidos só para contar e nunca são gravados.
-const { db, tx, getSetting, setSetting } = require('./db');
+const crypto = require('node:crypto');
+const { db, tx, getSetting, setSetting, ensureSecret } = require('./db');
 const { iso, round2, daysInMonth, todayIso, MONTHS } = require('./metrics');
 const { normalize, matchProfessional, displayName, directory } = require('./team');
 
@@ -103,6 +104,7 @@ async function analyze(files, escolhido = {}) {
   const agendamentos = (reports.agendamentos || []).map((r) => ({
     pro: r.PROFISSIONAL, origem: normalize(r['ORIGEM AGENDAMENTO']), clube: normalize(r['ACESSO AO CLUBE']) === 'SIM',
     status: normalize(r.STATUS), cliente_status: normalize(r['STATUS DO CLIENTE']), date: brDate(r['DATA E HORA']),
+    cliente: r.CLIENTE,
   })).filter((a) => a.date);
   // Período dos arquivos: as datas de comandas/agendamentos definem o mês; sem elas, vale o mês escolhido na tela
   const fmt = (d) => d.split('-').reverse().join('/');
@@ -417,8 +419,24 @@ async function analyze(files, escolhido = {}) {
     brutoPro = { servicos: !!reports.servicos_pro, produtos: itensPro.length > 0, por_profissional: [...map.values()] };
   }
 
+  // ---- visitas (agendamentos finalizados) para o Radar de clientes: só o nome do cliente e um código
+  // embaralhado do telefone/e-mail (para não misturar homônimos); telefone e e-mail não são guardados
+  let visitas = null;
+  const finalizados = agendamentos.filter((a) => a.status === 'FINALIZADO' && a.cliente);
+  if (finalizados.length) {
+    const segredo = await ensureSecret('radar_secret');
+    const lista = [];
+    for (const a of finalizados) {
+      const { nome, chave } = clienteDe(a.cliente, segredo);
+      if (!chave) continue;
+      const pro = resolve(a.pro);
+      lista.push({ k: chave, n: nome, pro_nome: pro.nome, pro_id: pro.id, d: a.date, c: a.clube ? 1 : 0 });
+    }
+    visitas = lista;
+  }
+
   return {
-    comissoes, bruto_pro: brutoPro,
+    comissoes, bruto_pro: brutoPro, visitas,
     unidade: Object.keys(unidade).length ? unidade : null,
     ano: y, mes: m, mes_nome: m ? `${MONTHS[m - 1]}/${y}` : null,
     mes_detectado: months.length > 0, periodos,
@@ -432,6 +450,17 @@ async function analyze(files, escolhido = {}) {
     } : null,
     servicos: servicos.length ? { lista: servicos, sva_total: round2(svaTotal), total: round2(servTotal) } : null,
   };
+}
+
+// "Nome - (11) 99999-9999 - email@x.com" → nome e um código (HMAC do telefone, ou do e-mail, ou do nome)
+function clienteDe(campo, segredo) {
+  const partes = String(campo || '').split(/\s+-\s+/).map((x) => x.trim()).filter(Boolean);
+  const nome = (partes[0] || '').replace(/\s+/g, ' ').trim();
+  const fone = String(campo).replace(/\S+@\S+/g, '').replace(/\D/g, '').slice(-11);
+  const email = (String(campo).match(/[^\s@]+@[^\s@]+\.[^\s@]+/) || [''])[0].toLowerCase();
+  const base = fone.length >= 10 ? `t:${fone}` : email ? `e:${email}` : nome ? `n:${normalize(nome)}` : '';
+  if (!base) return { nome, chave: null };
+  return { nome, chave: crypto.createHmac('sha256', segredo).update(base).digest('base64url').slice(0, 16) };
 }
 
 async function saveReport(q, y, m, kind, data) {
@@ -548,6 +577,15 @@ async function apply(plan) {
       await saveReport(q, y, m, 'comissoes', { ...plan.comissoes, lista, atualizado: new Date().toISOString() });
     }
 
+    // visitas do mês para o Radar de clientes (o relatório do mês substitui as visitas daquele mês)
+    if (plan.visitas?.length && y && m) {
+      const lista = [];
+      for (const v of plan.visitas) {
+        const pid = v.pro_id || (await ensurePro({ id: null, nome: v.pro_nome }));
+        lista.push([v.k, v.n, pid, v.d, v.c]);
+      }
+      await saveReport(q, y, m, 'visitas', { lista });
+    }
     if (plan.agenda) {
       const profissionais = [];
       for (const p of plan.agenda.profissionais) {
@@ -556,7 +594,7 @@ async function apply(plan) {
       }
       await saveReport(q, y, m, 'agenda', { totais: plan.agenda.totais, profissionais, por_dia: plan.agenda.por_dia });
     }
-    if (y && m) await saveReport(q, y, m, 'importacao', { em: new Date().toISOString(), relatorios: plan.relatorios, periodos: plan.periodos });
+    if (y && m && !plan.somente_visitas) await saveReport(q, y, m, 'importacao', { em: new Date().toISOString(), relatorios: plan.relatorios, periodos: plan.periodos });
     if (plan.assinaturas) await saveReport(q, y, m, 'assinaturas', plan.assinaturas);
     if (plan.servicos) await saveReport(q, y, m, 'servicos', plan.servicos);
     // indicadores da unidade: junta com o que já existe (cada relatório traz uma parte)

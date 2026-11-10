@@ -10,6 +10,7 @@ const importer = require('./importer');
 const access = require('./access');
 const comissoes = require('./comissoes');
 const metas = require('./metas');
+const radar = require('./radar');
 const { normalize } = require('./team');
 
 // Prepara o banco uma vez por instância (em serverless, a cada "cold start")
@@ -174,6 +175,14 @@ app.get('/api/profissionais', auth.requireAuth, wrap(async (req) => {
   return access.ownOnly(req.access) ? all.filter((p) => p.id === req.access.professional_id) : all;
 }));
 // Últimos eventos do webhook, resumidos para a página inicial (qualquer usuário logado)
+// ---------------------------------------------------------------- Radar de clientes
+app.get('/api/radar', auth.requireAuth, (req, res, next) => (access.canPage(req.access, 'clientes') ? next() : deny(res)), wrap(async (req) => {
+  const meses = Math.min(12, Math.max(1, Number(req.query.meses) || 4));
+  const own = access.ownOnly(req.access);
+  if (own && !req.access.professional_id) throw new Error('Seu login não está ligado a um profissional');
+  const r = await radar.calcular({ meses, professionalId: own ? req.access.professional_id : null });
+  return { ...r, restrito: own };
+}));
 // ---------------------------------------------------------------- Metas individuais
 // Barbeiro com "só os próprios números" vê só a dele; o painel de cada um atualiza com o robô (20h)
 app.get('/api/metas-individuais', auth.requireAuth, needPros, wrap(async (req) => {
@@ -579,7 +588,9 @@ function robotAuth(req, res, next) {
 app.post('/api/robo/importar', robotAuth, wrap(async (req) => {
   const files = Array.isArray(req.body?.files) ? req.body.files.filter((f) => f && typeof f.text === 'string') : [];
   if (!files.length) throw new Error('Nenhum arquivo recebido');
-  const plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
+  let plan = await importer.analyze(files, { ano: req.body.ano, mes: req.body.mes });
+  // robô no modo clientes: grava só as visitas do mês (Radar de clientes); o resto do painel não muda
+  if (req.body.somente === 'clientes') plan = { ano: plan.ano, mes: plan.mes, relatorios: plan.relatorios, ignorados: plan.ignorados, visitas: plan.visitas, somente_visitas: true };
   const y = plan.ano; const m = plan.mes;
   const ignoradosPorSeguranca = [];
   if (y && m) {
