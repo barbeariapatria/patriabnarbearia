@@ -18,6 +18,9 @@ on:
         description: "Substituir os dados do mês no painel mesmo se o total for bem diferente do atual"
         type: boolean
         default: false
+      explorar:
+        description: "Só no modo testar: números de relatórios para ver as colunas (ex.: 30,11,22). Nada é enviado"
+        required: false
       manter_assinantes:
         description: "Não mexer na base de assinantes do mês (usar para meses passados)"
         type: boolean
@@ -63,6 +66,7 @@ jobs:
           MES: ${{ inputs.mes }}
           SUBSTITUIR: ${{ inputs.substituir || false }}
           MANTER_ASSINANTES: ${{ inputs.manter_assinantes || false }}
+          EXPLORAR: ${{ inputs.explorar }}
         run: node sync.mjs
       # Só o resumo (e o mapa no modo mapear): nenhum dado de cliente é salvo — o repositório é público
       - name: Guardar o resumo

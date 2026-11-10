@@ -1131,7 +1131,9 @@ async function main() {
       if (process.env.MANTER_ASSINANTES === 'true' || process.env.MANTER_ASSINANTES === '1') log('  Opção: não mexer na base de assinantes');
       const porTipo = {}; const resumo = { mes: `${mes.ano}-${pad(mes.mes)}`, relatorios: {} };
       // modo clientes: só o Histórico de agendamentos (o resto do painel não muda)
-      for (const pg of MODO === 'clientes' ? PAGINAS.filter((x) => /relatorio03$/.test(x.url || '')) : PAGINAS) {
+      // EXPLORAR=30,11,22 (modo testar): abre só esses relatórios e mostra todas as colunas (nada é enviado)
+      const explorar = MODO === 'testar' && process.env.EXPLORAR ? process.env.EXPLORAR.split(/[,\s]+/).filter(Boolean).map((n) => ({ url: /^\//.test(n) ? n : `/relatorio/relatorio${n.padStart(2, '0')}`, nome: `explorar ${n}`, periodo: true })) : null;
+      for (const pg of explorar || (MODO === 'clientes' ? PAGINAS.filter((x) => /relatorio03$/.test(x.url || '')) : PAGINAS)) {
         const nome = pg.nome || pg.url;
         try {
           if (pg.comissoes) {
@@ -1219,6 +1221,7 @@ async function main() {
           }
           const tipo = tipoDoCsv(ex.csv);
           log(`  ${nome}: ${ex.origem} (${ex.arquivo}) → ${tipo || 'formato não usado pelo painel'} · ${resumoCsv(ex.csv)}`);
+          if (pg.nome?.startsWith('explorar')) log(`    todas as colunas: ${(ex.csv.replace(/^\uFEFF/, '').split(/\r?\n/)[0] || '').replace(/"/g, '')}`);
           resumo.relatorios[nome] = tipo || 'não reconhecido';
           if (tipo && !porTipo[tipo]) porTipo[tipo] = { name: `${tipo}.csv`, text: ex.csv };
         } catch (e) {
