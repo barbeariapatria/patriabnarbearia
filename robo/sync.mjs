@@ -824,6 +824,23 @@ function equipeDoCsv(txt) {
   return ls.slice(1).filter((r) => norm(r[i('tipo')]) === 'profissional' && r[i('status')] === '1' && !/^recep/i.test(norm(r[i('nome')])))
     .map((r) => ({ id: r[i('id')], nome: r[i('nome')] })).filter((x) => x.id && x.nome);
 }
+// Captação a partir da resposta do relatório 11: o CSV do CashBarber traz a data de cadastro quebrada (só o ano
+// é confiável); a resposta tem created_at certo. Cliente no mesmo formato das visitas (nome - telefone - e-mail).
+function captacaoDoJson(desde) {
+  const linhas = new Map();
+  for (const r of RESP_REL.slice(desde).filter((x) => /\/relatorios\/11$/.test(x.caminho))) {
+    for (const x of todasListas(r.json)) {
+      if (!x.cli_name || !x.created_at) continue;
+      const cliente = [x.cli_name, x.cli_telefone, x.email].filter(Boolean).join(' - ');
+      const data = String(x.created_at).slice(0, 10);
+      const indic = typeof x.cli_quem_indicou === 'object' && x.cli_quem_indicou ? valorJson(x.cli_quem_indicou) : (x.cli_quem_indicou ?? '');
+      linhas.set(x.id ?? cliente, [cliente, x.cli_como_conheceu ?? '', data, indic]);
+    }
+  }
+  if (!linhas.size) return null;
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  return [['Cliente', 'Como conheceu', 'Data de cadastro', 'Indicado por'], ...linhas.values()].map((l) => l.map(q).join(';')).join('\n');
+}
 // todas as listas de objetos da resposta (Vendas pode trazer produtos e serviços em listas separadas)
 function todasListas(o, prof = 0, out = []) {
   if (!o || typeof o !== 'object' || prof > 4) return out;
@@ -1228,6 +1245,7 @@ async function main() {
           if (pg.nome?.startsWith('explorar')) log(`    todas as colunas: ${(ex.csv.replace(/^\uFEFF/, '').split(/\r?\n/)[0] || '').replace(/"/g, '')}`);
           resumo.relatorios[nome] = tipo || 'não reconhecido';
           if (tipo && !porTipo[tipo]) porTipo[tipo] = { name: `${tipo}.csv`, text: ex.csv };
+          if (tipo === 'captacao') { const j = captacaoDoJson(REL_DESDE); if (j) { porTipo.captacao = { name: 'captacao.csv', text: j }; log(`  ${nome}: captação pela resposta do CashBarber (datas certas)`); } }
           // Vendas: o CashBarber separa produto (pro_nome) de serviço (ser_nome) na resposta; vira a lista exata de produtos
           if (/relatorio15$/.test(pg.url || '') && !porTipo.cosmeticos) {
             const prods = new Map();
@@ -1297,7 +1315,10 @@ async function main() {
         await conferirDatas(page, per);
         const f0 = FILA.length; const n0 = NOVAS.length;
         REL_DESDE = RESP_REL.length;
-        const ex = (await aplicarFiltro(page) ? await aguardarResultado(page, f0, n0) : null) || await exportar(page);
+        let ex = (await aplicarFiltro(page) ? await aguardarResultado(page, f0, n0) : null) || await exportar(page);
+        for (let t = 0; t < 10 && !RESP_REL.slice(REL_DESDE).some((x) => /\/relatorios\/11$/.test(x.caminho)); t++) await page.waitForTimeout(500);
+        const doJson = captacaoDoJson(REL_DESDE);
+        if (doJson) { ex = { origem: 'resposta do CashBarber', arquivo: 'captacao.csv', csv: doJson }; log('  Captação montada pela resposta do CashBarber (datas de cadastro certas)'); }
         if (!ex || tipoDoCsv(ex.csv) !== 'captacao') throw new Error(`não consegui exportar a captação (período ${como || '?'})`);
         log(`== Captação de clientes desde ${per.deBr}: ${resumoCsv(ex.csv)}`);
         // formatos da data de cadastro (só o desenho: dígitos viram 9; mês > 12 marcado), para conferir a leitura

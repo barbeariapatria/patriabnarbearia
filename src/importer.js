@@ -633,8 +633,14 @@ async function apply(plan) {
     if (plan.vendas_planos && y && m) await saveReport(q, y, m, 'vendas_planos', { lista: plan.vendas_planos });
     // captação: guardada pelo mês do cadastro (um envio com vários meses atualiza cada um)
     if (plan.captacao?.length) {
+      // captação completa (robô no modo clientes): substitui toda a captação guardada
+      if (plan.somente_visitas) await q.run("DELETE FROM monthly_reports WHERE kind = 'captacao'");
       const porMes = new Map();
-      for (const c of plan.captacao) { const km = c.cadastro.slice(0, 7); if (!porMes.has(km)) porMes.set(km, []); porMes.get(km).push(c); }
+      for (const c of plan.captacao) {
+        const mm = Number(c.cadastro.slice(5, 7));
+        if (!(mm >= 1 && mm <= 12)) continue; // data inválida
+        const km = c.cadastro.slice(0, 7); if (!porMes.has(km)) porMes.set(km, []); porMes.get(km).push(c);
+      }
       for (const [km, lista] of porMes) await saveReport(q, Number(km.slice(0, 4)), Number(km.slice(5, 7)), 'captacao', { lista });
     }
     // visitas do mês para o Radar de clientes (o relatório do mês substitui as visitas daquele mês)
